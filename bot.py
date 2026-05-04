@@ -1,4 +1,4 @@
-"""Local AI dental receptionist - lower temp, anti-loop, deterministic flow."""
+"""Local AI dental receptionist - phone number normalization for TTS."""
 
 import os
 import re
@@ -48,7 +48,7 @@ PIPER_VOICE = os.path.expanduser("~/piper-voices/en_US-lessac-medium.onnx")
 LOG_DIR = Path("./call_logs")
 LOG_DIR.mkdir(exist_ok=True)
 
-# Track booking state per call so we can stop calling tools after completion
+
 class CallState:
     def __init__(self):
         self.booking_complete = False
@@ -56,6 +56,43 @@ class CallState:
         self.last_user_text = ""
 
 CALL_STATE = CallState()
+
+
+# ---------- Phone number normalization for TTS ----------
+DIGIT_WORDS = {
+    "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
+    "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
+}
+
+# Match runs of digits separated by -, ., spaces, or parens, with at least 7 digits total.
+# Examples matched: "201-388-2149", "(201) 388-2149", "201.388.2149", "2013882149"
+PHONE_PATTERN = re.compile(
+    r"\(?\b\d{3}\)?[\s.\-]*\d{3}[\s.\-]*\d{4}\b"
+    r"|\b\d{7,11}\b"
+)
+
+
+def speak_digits(s: str) -> str:
+    """Convert a phone-number-shaped string to space-separated digit words.
+    Pause hints inserted at standard area-code/exchange/line breaks."""
+    digits = re.sub(r"\D", "", s)
+    if len(digits) == 10:
+        # area code, exchange, line number
+        parts = [digits[:3], digits[3:6], digits[6:]]
+    elif len(digits) == 11 and digits[0] == "1":
+        parts = [digits[0], digits[1:4], digits[4:7], digits[7:]]
+    elif len(digits) == 7:
+        parts = [digits[:3], digits[3:]]
+    else:
+        parts = [digits]
+    return ", ".join(" ".join(DIGIT_WORDS[d] for d in p) for p in parts)
+
+
+def normalize_for_tts(text: str) -> str:
+    """Replace phone-number-shaped substrings with spoken digit form."""
+    def repl(m):
+        return speak_digits(m.group(0))
+    return PHONE_PATTERN.sub(repl, text)
 
 
 # ---------- Manual VAD ----------
@@ -107,7 +144,6 @@ class AudioRateLogger(FrameProcessor):
 
 
 class IncomingAudioLogger(FrameProcessor):
-    """Logs whisper output AND captures it as last_user_text for tool gating."""
     def __init__(self):
         super().__init__()
         self._first_audio_logged = False
@@ -124,7 +160,12 @@ class IncomingAudioLogger(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-class LlamaTokenStripper(FrameProcessor):
+class TextNormalizer(FrameProcessor):
+    """Cleans LLM output before it hits TTS:
+       - Strips Llama chat-template tokens
+       - Strips wrapping quotes
+       - Converts phone numbers to spoken digit form
+    """
     LEAKED_TOKENS = ["<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>",
                      "<|begin_of_text|>", "<|end_of_text|>"]
     LEADING_ROLE = re.compile(r"^\s*assistant\b[\s:.\-]*", re.IGNORECASE)
@@ -142,6 +183,7 @@ class LlamaTokenStripper(FrameProcessor):
                 m = self.WRAPPING_QUOTES.match(cleaned)
                 if m:
                     cleaned = m.group(1)
+                cleaned = normalize_for_tts(cleaned)
                 if cleaned != txt:
                     try:
                         setattr(frame, "text", cleaned)
@@ -156,10 +198,7 @@ def _save_record(kind: str, data: dict) -> Path:
     return fn
 
 
-# ---------- Tool gating helpers ----------
 PLACEHOLDER_VALUES = {"", "unknown", "none", "null", "n/a", "na", "tbd", "to be determined", "string"}
-
-# Affirmative / negative caller responses that should NOT be treated as messages
 NO_RESPONSES = {"no", "no thanks", "no thank you", "nope", "nah", "no thats it", "thats all",
                 "that's it", "that's all", "im good", "i'm good", "all good", "okay bye",
                 "ok bye", "bye", "goodbye", "thanks bye"}
@@ -177,14 +216,11 @@ def _missing(args: dict, *fields) -> list:
 
 
 def _looks_like_assistant_question(s: str) -> bool:
-    """Detect when LLM tries to save its own question as the user's message."""
     if not isinstance(s, str):
         return False
     low = s.lower()
-    tells = [
-        "would you like", "is there anything", "can i get", "could i get",
-        "do you have", "what day", "what time", "what's the best", "anything else",
-    ]
+    tells = ["would you like", "is there anything", "can i get", "could i get",
+             "do you have", "what day", "what time", "what's the best", "anything else"]
     return s.strip().endswith("?") or any(t in low for t in tells)
 
 
@@ -238,7 +274,6 @@ async def book_appointment_callback(params):
 async def take_message(params):
     args = params.arguments or {}
 
-    # Block 1: caller said "no" / "bye" - that's not a message to save
     if _is_caller_declining(CALL_STATE.last_user_text):
         logger.warning(f"take_message blocked: caller declined ('{CALL_STATE.last_user_text}')")
         await params.result_callback({
@@ -248,7 +283,6 @@ async def take_message(params):
         })
         return
 
-    # Block 2: LLM trying to save its own prior question as the message
     msg = (args.get("message") or "").strip()
     if _looks_like_assistant_question(msg):
         logger.warning(f"take_message blocked: message looks like assistant's own question ({msg!r})")
@@ -388,7 +422,7 @@ async def main():
     llm = OLLamaLLMService(
         settings=OLLamaLLMService.Settings(
             model="receptionist-llama",
-            temperature=0.1,   # was 0.4 - much more deterministic
+            temperature=0.1,
         ),
     )
     llm.register_function("book_appointment_callback", book_appointment_callback)
@@ -412,7 +446,7 @@ async def main():
         stt,
         context_aggregator.user(),
         llm,
-        LlamaTokenStripper(),
+        TextNormalizer(),
         tts,
         AudioRateLogger(),
         transport.output(),
@@ -431,7 +465,6 @@ async def main():
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info("Client connected - greeting caller")
-        # Reset per-call state
         CALL_STATE.booking_complete = False
         CALL_STATE.message_complete = False
         CALL_STATE.last_user_text = ""
