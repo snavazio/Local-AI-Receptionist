@@ -1,9 +1,4 @@
-"""Local AI dental receptionist - manual VAD via FrameProcessor.
-
-The Pipecat 1.x WebsocketServerInputTransport doesn't invoke vad_analyzer on
-incoming audio, so we synthesize UserStartedSpeakingFrame / UserStoppedSpeakingFrame
-ourselves based on energy. Downstream STT/STT segmentation listens to those events.
-"""
+"""Local AI dental receptionist - tightened tool gating and turn timing."""
 
 import os
 import re
@@ -24,6 +19,7 @@ from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import (
     LLMContextFrame, OutputAudioRawFrame, InputAudioRawFrame,
     UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame,
     TranscriptionFrame, StartFrame, Frame,
 )
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
@@ -53,16 +49,19 @@ LOG_DIR = Path("./call_logs")
 LOG_DIR.mkdir(exist_ok=True)
 
 
-# ---------- Manual VAD: emits speaking start/stop frames based on RMS ----------
+# ---------- Manual VAD with longer stop window for natural turn-taking ----------
 class ManualEnergyVAD(FrameProcessor):
-    """Inline energy VAD. Looks at every InputAudioRawFrame, tracks RMS state,
-    emits UserStartedSpeakingFrame when sustained loud frames detected, and
-    UserStoppedSpeakingFrame after sustained silence. All audio frames are
-    passed through unchanged."""
+    """Inline energy-based VAD.
 
-    RMS_THRESHOLD = 800.0      # int16 RMS for "speech"
-    START_FRAMES = 5           # ~100ms loud => speaking
-    STOP_FRAMES = 30           # ~600ms silence => stopped
+    Pipecat 1.x WebsocketServerInputTransport doesn't invoke VAD analyzers, so
+    we synthesize speaking frames ourselves. We emit BOTH:
+      - UserStartedSpeakingFrame / UserStoppedSpeakingFrame  (for UI / RTVI clients)
+      - VADUserStartedSpeakingFrame / VADUserStoppedSpeakingFrame  (for SegmentedSTTService)
+    """
+
+    RMS_THRESHOLD = 800.0       # int16 RMS for "speech"
+    START_FRAMES = 5            # ~100ms loud => speaking
+    STOP_FRAMES = 55            # ~1.1s silence => stopped (was 30 = 600ms)
 
     def __init__(self):
         super().__init__()
@@ -83,6 +82,7 @@ class ManualEnergyVAD(FrameProcessor):
                 if not self._is_speaking and self._loud_count >= self.START_FRAMES:
                     self._is_speaking = True
                     logger.warning(f">>> ManualVAD: STARTED (rms={rms:.0f}) <<<")
+                    await self.push_frame(VADUserStartedSpeakingFrame(), direction)
                     await self.push_frame(UserStartedSpeakingFrame(), direction)
             else:
                 self._silent_count += 1
@@ -90,6 +90,7 @@ class ManualEnergyVAD(FrameProcessor):
                 if self._is_speaking and self._silent_count >= self.STOP_FRAMES:
                     self._is_speaking = False
                     logger.warning(">>> ManualVAD: STOPPED <<<")
+                    await self.push_frame(VADUserStoppedSpeakingFrame(), direction)
                     await self.push_frame(UserStoppedSpeakingFrame(), direction)
 
         await self.push_frame(frame, direction)
@@ -169,39 +170,59 @@ async def take_message(params):
     await params.result_callback({"ok": True, "spoken_response": "Message saved. The office will reach out soon."})
 
 
-async def transfer_to_human(params):
+async def escalate_emergency(params):
     rec = {"ts": datetime.datetime.now().isoformat(), **params.arguments}
     fn = _save_record("escalation", rec)
-    logger.warning(f"Escalation -> {fn}")
-    await params.result_callback({"ok": True, "spoken_response": f"For dental emergencies please call {PRACTICE['emergency_line']}."})
+    logger.warning(f"Emergency escalation -> {fn}")
+    await params.result_callback({
+        "ok": True,
+        "spoken_response": f"For dental emergencies please hang up and call {PRACTICE['emergency_line']} immediately."
+    })
 
 
 tools = ToolsSchema(standard_tools=[
     FunctionSchema(
         name="book_appointment_callback",
-        description="Use when caller wants to schedule, reschedule, or cancel an appointment.",
+        description=(
+            "Call this ONLY after you have collected ALL THREE required fields from the caller: "
+            "their name, their callback phone number, and their preferred appointment window "
+            "(e.g. 'Tuesday morning'). Do NOT call this with empty or 'unknown' values. "
+            "If any field is missing, ask the caller for it instead of calling this tool."
+        ),
         properties={
-            "caller_name": {"type": "string"},
-            "callback_number": {"type": "string"},
-            "preferred_window": {"type": "string"},
-            "reason": {"type": "string"},
+            "caller_name": {"type": "string", "description": "Caller's full name as they stated it."},
+            "callback_number": {"type": "string", "description": "Phone number caller gave for callback."},
+            "preferred_window": {"type": "string", "description": "Day and time-of-day preference."},
+            "reason": {"type": "string", "description": "Reason for visit, e.g. 'cleaning', 'toothache'."},
         },
         required=["caller_name", "callback_number", "preferred_window"],
     ),
     FunctionSchema(
         name="take_message",
-        description="Use when caller wants to leave a non-appointment message.",
+        description=(
+            "Call this ONLY when the caller EXPLICITLY asks to leave a message for the staff or doctor "
+            "(e.g. 'Can you tell Dr. Smith...', 'Please leave a message saying...', 'I want to leave a note'). "
+            "Do NOT call this for general questions, off-topic questions, social chat, or anything you can answer "
+            "directly. Just answer those in your own words."
+        ),
         properties={
             "caller_name": {"type": "string"},
             "callback_number": {"type": "string"},
-            "message": {"type": "string"},
+            "message": {"type": "string", "description": "The exact message the caller asked to relay."},
         },
         required=["caller_name", "callback_number", "message"],
     ),
     FunctionSchema(
-        name="transfer_to_human",
-        description="Use ONLY for dental emergencies.",
-        properties={"reason": {"type": "string"}},
+        name="escalate_emergency",
+        description=(
+            "Call this ONLY for ACTUAL DENTAL EMERGENCIES with clear medical urgency: "
+            "severe tooth pain, facial swelling, knocked-out tooth, uncontrolled bleeding, trauma to mouth/jaw. "
+            "Do NOT call this for: requests to speak with a manager, general complaints, scheduling questions, "
+            "or non-medical issues. For those, use take_message or just answer directly."
+        ),
+        properties={
+            "reason": {"type": "string", "description": "Specific emergency symptom described by caller."},
+        },
         required=["reason"],
     ),
 ])
@@ -214,20 +235,35 @@ VOICE FORMAT:
 - 1-2 short sentences. No markdown.
 - Speak numbers naturally.
 
-FLOW:
-1. Greet warmly: "Thanks for calling {PRACTICE['name']}, how can I help?"
-2. Identify intent: appointment, question, message, emergency.
-3. Appointments -> gather name, callback number, preferred window, reason -> call book_appointment_callback. Tell caller staff will call back. NEVER commit to specific times.
-4. General questions you can answer (hours, address) -> answer directly.
-5. Anything else -> take_message.
-6. Emergencies (severe pain, swelling, trauma, bleeding) -> transfer_to_human immediately.
+CRITICAL TOOL RULES:
+- Most caller turns DO NOT need a tool. Just answer in your own words.
+- Tools are for SAVING DATA, not for replying. The reply happens after the tool returns.
+- For off-topic questions ("do you sell cake?", "can you fix my car?", "can you be my friend?"):
+  Just answer politely in your own words. DO NOT call take_message.
+- For requests to speak to a human/manager: politely say you're an automated assistant and offer
+  to take a message OR have someone call them back. DO NOT call escalate_emergency.
+- escalate_emergency is ONLY for medical dental emergencies (severe pain, swelling, bleeding, trauma).
 
-KNOWN INFO:
+APPOINTMENT FLOW:
+1. Caller says they want an appointment.
+2. Ask for their name.
+3. Ask for their callback number.
+4. Ask for their preferred day and time-of-day window.
+5. Optionally ask reason for visit.
+6. ONLY THEN call book_appointment_callback with all fields filled in.
+7. Confirm: "Got it, someone will call you back shortly to confirm."
+NEVER call book_appointment_callback with blank or 'unknown' fields. Ask first.
+
+KNOWN INFO YOU CAN ANSWER DIRECTLY:
 - Hours: {PRACTICE['hours']}
 - Address: {PRACTICE['address']}
 - Emergency line: {PRACTICE['emergency_line']}
 
-NEVER quote prices, confirm exact times, give medical advice. If asked human, say "I'm an automated assistant, but I can take your information and have someone call you right back."
+GREETING:
+"Thanks for calling {PRACTICE['name']}, how can I help?"
+
+NEVER quote prices, confirm exact times, or give medical advice.
+If caller asks for a human: "I'm an automated assistant, but I can take your information and have someone call you right back."
 
 Be warm, brief, competent.
 """
@@ -243,7 +279,7 @@ async def main():
             audio_in_sample_rate=16000,
             audio_out_sample_rate=22050,
             add_wav_header=False,
-            vad_analyzer=None,   # we do VAD inline below
+            vad_analyzer=None,
             serializer=ProtobufFrameSerializer(),
         ),
     )
@@ -259,7 +295,7 @@ async def main():
     )
     llm.register_function("book_appointment_callback", book_appointment_callback)
     llm.register_function("take_message", take_message)
-    llm.register_function("transfer_to_human", transfer_to_human)
+    llm.register_function("escalate_emergency", escalate_emergency)
 
     tts = PiperTTSService(
         settings=PiperTTSService.Settings(voice="en_US-lessac-medium"),
@@ -273,7 +309,7 @@ async def main():
 
     pipeline = Pipeline([
         transport.input(),
-        ManualEnergyVAD(),         # synthesizes start/stop speaking events
+        ManualEnergyVAD(),
         IncomingAudioLogger(),
         stt,
         context_aggregator.user(),
