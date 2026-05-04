@@ -1,4 +1,4 @@
-"""Local AI dental receptionist - phone number normalization for TTS."""
+"""Local AI dental receptionist - hardened against placeholder injection + over-eager tool calls."""
 
 import os
 import re
@@ -21,6 +21,7 @@ from pipecat.frames.frames import (
     UserStartedSpeakingFrame, UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame,
     TranscriptionFrame, StartFrame, Frame,
+    TTSSpeakFrame,
 )
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.adapters.schemas.function_schema import FunctionSchema
@@ -54,18 +55,19 @@ class CallState:
         self.booking_complete = False
         self.message_complete = False
         self.last_user_text = ""
+        self.pending_phone = None
+        self.confirmed_phone = None
+        self.force_speak = None
 
 CALL_STATE = CallState()
 
 
-# ---------- Phone number normalization for TTS ----------
+# ---------- Phone normalization ----------
 DIGIT_WORDS = {
     "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
     "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
 }
 
-# Match runs of digits separated by -, ., spaces, or parens, with at least 7 digits total.
-# Examples matched: "201-388-2149", "(201) 388-2149", "201.388.2149", "2013882149"
 PHONE_PATTERN = re.compile(
     r"\(?\b\d{3}\)?[\s.\-]*\d{3}[\s.\-]*\d{4}\b"
     r"|\b\d{7,11}\b"
@@ -73,11 +75,8 @@ PHONE_PATTERN = re.compile(
 
 
 def speak_digits(s: str) -> str:
-    """Convert a phone-number-shaped string to space-separated digit words.
-    Pause hints inserted at standard area-code/exchange/line breaks."""
     digits = re.sub(r"\D", "", s)
     if len(digits) == 10:
-        # area code, exchange, line number
         parts = [digits[:3], digits[3:6], digits[6:]]
     elif len(digits) == 11 and digits[0] == "1":
         parts = [digits[0], digits[1:4], digits[4:7], digits[7:]]
@@ -89,10 +88,21 @@ def speak_digits(s: str) -> str:
 
 
 def normalize_for_tts(text: str) -> str:
-    """Replace phone-number-shaped substrings with spoken digit form."""
-    def repl(m):
-        return speak_digits(m.group(0))
-    return PHONE_PATTERN.sub(repl, text)
+    return PHONE_PATTERN.sub(lambda m: speak_digits(m.group(0)), text)
+
+
+def extract_phone_digits(text: str) -> str | None:
+    if not text:
+        return None
+    digits = re.sub(r"\D", "", text)
+    if 7 <= len(digits) <= 11:
+        return digits
+    m = PHONE_PATTERN.search(text)
+    if m:
+        d = re.sub(r"\D", "", m.group(0))
+        if 7 <= len(d) <= 11:
+            return d
+    return None
 
 
 # ---------- Manual VAD ----------
@@ -160,12 +170,30 @@ class IncomingAudioLogger(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class ForcedSpeechOverride(FrameProcessor):
+    def __init__(self):
+        super().__init__()
+        self._spoken = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if CALL_STATE.force_speak and not self._spoken:
+            if hasattr(frame, "text") and isinstance(getattr(frame, "text", None), str):
+                forced = CALL_STATE.force_speak
+                logger.warning(f">>> FORCING SPEECH: {forced!r} <<<")
+                await self.push_frame(TTSSpeakFrame(text=forced), direction)
+                self._spoken = True
+                CALL_STATE.force_speak = None
+                return
+
+        if self._spoken and not CALL_STATE.force_speak:
+            self._spoken = False
+
+        await self.push_frame(frame, direction)
+
+
 class TextNormalizer(FrameProcessor):
-    """Cleans LLM output before it hits TTS:
-       - Strips Llama chat-template tokens
-       - Strips wrapping quotes
-       - Converts phone numbers to spoken digit form
-    """
     LEAKED_TOKENS = ["<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>",
                      "<|begin_of_text|>", "<|end_of_text|>"]
     LEADING_ROLE = re.compile(r"^\s*assistant\b[\s:.\-]*", re.IGNORECASE)
@@ -198,10 +226,52 @@ def _save_record(kind: str, data: dict) -> Path:
     return fn
 
 
-PLACEHOLDER_VALUES = {"", "unknown", "none", "null", "n/a", "na", "tbd", "to be determined", "string"}
-NO_RESPONSES = {"no", "no thanks", "no thank you", "nope", "nah", "no thats it", "thats all",
-                "that's it", "that's all", "im good", "i'm good", "all good", "okay bye",
-                "ok bye", "bye", "goodbye", "thanks bye"}
+# ---------- Hardened placeholder + intent detection ----------
+PLACEHOLDER_VALUES = {
+    "", "unknown", "none", "null", "n/a", "na", "tbd", "to be determined",
+    "string", "name", "phone", "number", "callback_number", "caller_name",
+    "message", "the caller", "caller", "user", "anonymous", "no name",
+    "no number", "not provided", "not given", "nil",
+}
+
+NO_RESPONSES = {
+    "no", "no thanks", "no thank you", "nope", "nah", "no thats it", "thats all",
+    "that's it", "that's all", "im good", "i'm good", "all good", "okay bye",
+    "ok bye", "bye", "goodbye", "thanks bye", "bye bye", "see ya",
+}
+
+YES_RESPONSES = {
+    "yes", "yeah", "yep", "yup", "correct", "thats right", "that's right",
+    "right", "thats it", "that's it", "yes thats right", "yes correct",
+    "sounds right", "sounds good", "yes please", "uh huh", "mhm", "ya",
+}
+
+GREETING_NOISE = {
+    "hi", "hello", "hey", "yo", "hiya", "howdy",
+    "test", "testing", "testing testing", "can you hear me", "hello hello",
+}
+
+
+def _normalize_placeholder(s) -> str:
+    """Strip angle brackets, square brackets, parens, curly braces from placeholder values.
+    LLMs love wrapping placeholders in <unknown>, [name], (phone), {number}."""
+    if not isinstance(s, str):
+        return ""
+    return re.sub(r"^[<\[\(\{]+|[>\]\)\}]+$", "", s.strip()).lower()
+
+
+def _is_short_chitchat(s: str) -> bool:
+    """If user's last utterance is just a greeting/farewell, no tool should fire."""
+    if not s:
+        return True
+    norm = re.sub(r"[^\w\s']", "", s.lower()).strip()
+    if not norm:
+        return True
+    if norm in NO_RESPONSES or norm in GREETING_NOISE:
+        return True
+    if len(norm.split()) < 2 and norm in {"yes", "no", "ok", "okay", "sure"}:
+        return True
+    return False
 
 
 def _missing(args: dict, *fields) -> list:
@@ -210,7 +280,16 @@ def _missing(args: dict, *fields) -> list:
         v = args.get(f)
         if v is None:
             out.append(f); continue
-        if isinstance(v, str) and v.strip().lower() in PLACEHOLDER_VALUES:
+        if not isinstance(v, str):
+            continue
+        normalized = _normalize_placeholder(v)
+        if normalized in PLACEHOLDER_VALUES:
+            out.append(f)
+            continue
+        if f == "callback_number" and not re.search(r"\d", v):
+            out.append(f)
+            continue
+        if f == "caller_name" and len(normalized) < 2:
             out.append(f)
     return out
 
@@ -229,39 +308,82 @@ def _is_caller_declining(s: str) -> bool:
     return norm in NO_RESPONSES
 
 
-async def _reject(params, missing_fields: list, friendly: str):
-    msg = (
-        f"VALIDATION ERROR: missing or invalid {missing_fields}. "
-        f"Do NOT call this tool again until the caller has actually given you these. "
-        f"Ask the caller now. Suggested: {friendly!r}"
-    )
-    logger.warning(f"Tool gating rejected: missing={missing_fields}")
-    await params.result_callback({"ok": False, "error": msg, "spoken_response": friendly})
+def _is_caller_affirming(s: str) -> bool:
+    norm = re.sub(r"[^\w\s']", "", s.lower()).strip()
+    return norm in YES_RESPONSES
 
 
+def _looks_like_garbage_name(s: str) -> bool:
+    if not s:
+        return True
+    low = s.lower().strip()
+    bad_tokens = ["shirts", ".com", "http", "www.", "@", "<", ">"]
+    return any(b in low for b in bad_tokens)
+
+
+# ---------- Tool implementations ----------
 async def book_appointment_callback(params):
-    if CALL_STATE.booking_complete:
-        logger.warning("book_appointment_callback called after booking complete - ignoring")
+    # Hard guard: if last user turn was just chitchat/farewell, refuse outright
+    if _is_short_chitchat(CALL_STATE.last_user_text):
+        msg = "Could I get your name to start?"
+        CALL_STATE.force_speak = msg
+        logger.warning(f"book_appointment_callback blocked: chitchat ({CALL_STATE.last_user_text!r})")
         await params.result_callback({
             "ok": False,
-            "error": "Booking is already complete for this call. Do not book again. Just say goodbye if the caller is done.",
-            "spoken_response": "We've already got your callback scheduled. Anything else?",
+            "error": "User has not actually given any info yet. Ask for name.",
+            "spoken_response": msg,
         })
         return
 
+    if CALL_STATE.booking_complete:
+        msg = "We've already got your callback scheduled. Anything else?"
+        CALL_STATE.force_speak = msg
+        logger.warning("book_appointment_callback called after booking complete - ignoring")
+        await params.result_callback({"ok": False, "error": "Already booked", "spoken_response": msg})
+        return
+
     args = params.arguments or {}
+
+    name = (args.get("caller_name") or "").strip()
+    if _looks_like_garbage_name(name):
+        msg = "Sorry, I didn't catch your name clearly. Could you say it again?"
+        CALL_STATE.force_speak = msg
+        logger.warning(f"Tool gating: bogus name {name!r}")
+        await params.result_callback({"ok": False, "error": f"Bad name {name!r}", "spoken_response": msg})
+        return
+
     missing = _missing(args, "caller_name", "callback_number", "preferred_window")
     if missing:
+        # Ask only for the FIRST missing field, one at a time
         prompts = {
             "caller_name": "Could I get your name?",
             "callback_number": "What's the best phone number to call you back on?",
             "preferred_window": "What day and time works best for you?",
         }
-        ask = " ".join(prompts[f] for f in missing)
-        await _reject(params, missing, ask)
+        ask = prompts[missing[0]]
+        CALL_STATE.force_speak = ask
+        logger.warning(f"Tool gating rejected: missing={missing}")
+        await params.result_callback({"ok": False, "error": f"Missing {missing}", "spoken_response": ask})
         return
 
-    rec = {"ts": datetime.datetime.now().isoformat(), **args}
+    raw_number = args.get("callback_number", "")
+    digits = extract_phone_digits(raw_number)
+    if digits is None or len(digits) < 7:
+        msg = "I didn't catch your phone number clearly. Could you say it again, slowly?"
+        CALL_STATE.force_speak = msg
+        await params.result_callback({"ok": False, "error": "Bad phone", "spoken_response": msg})
+        return
+
+    if CALL_STATE.confirmed_phone != digits:
+        CALL_STATE.pending_phone = digits
+        spoken_back = speak_digits(digits)
+        msg = f"Just to confirm, your number is {spoken_back}. Is that right?"
+        CALL_STATE.force_speak = msg
+        logger.warning(f"Phone needs confirmation: {digits}")
+        await params.result_callback({"ok": False, "error": "Confirm phone", "spoken_response": msg})
+        return
+
+    rec = {"ts": datetime.datetime.now().isoformat(), **args, "callback_number": digits}
     fn = _save_record("callback", rec)
     CALL_STATE.booking_complete = True
     logger.info(f"Booking callback queued -> {fn}")
@@ -272,25 +394,28 @@ async def book_appointment_callback(params):
 
 
 async def take_message(params):
-    args = params.arguments or {}
-
-    if _is_caller_declining(CALL_STATE.last_user_text):
-        logger.warning(f"take_message blocked: caller declined ('{CALL_STATE.last_user_text}')")
-        await params.result_callback({
-            "ok": False,
-            "error": "The caller said no/bye, they don't want to leave a message. Do not call take_message. Just say goodbye warmly.",
-            "spoken_response": "Alright, take care!",
-        })
+    if _is_short_chitchat(CALL_STATE.last_user_text):
+        msg = "Take care!" if _is_caller_declining(CALL_STATE.last_user_text) else "How can I help?"
+        CALL_STATE.force_speak = msg
+        logger.warning(f"take_message blocked: chitchat ({CALL_STATE.last_user_text!r})")
+        await params.result_callback({"ok": False, "error": "Chitchat", "spoken_response": msg})
         return
 
-    msg = (args.get("message") or "").strip()
-    if _looks_like_assistant_question(msg):
-        logger.warning(f"take_message blocked: message looks like assistant's own question ({msg!r})")
-        await params.result_callback({
-            "ok": False,
-            "error": "The 'message' field looks like YOUR question, not the caller's words. Use what the caller actually said, or do not call this tool.",
-            "spoken_response": "What message should I pass along?",
-        })
+    args = params.arguments or {}
+
+    msgtxt = (args.get("message") or "").strip()
+    if _looks_like_assistant_question(msgtxt):
+        spoken = "What message should I pass along?"
+        CALL_STATE.force_speak = spoken
+        logger.warning(f"take_message blocked: self-question")
+        await params.result_callback({"ok": False, "error": "Self-question", "spoken_response": spoken})
+        return
+
+    name = (args.get("caller_name") or "").strip()
+    if _looks_like_garbage_name(name):
+        spoken = "Sorry, I didn't catch your name clearly. Could you say it again?"
+        CALL_STATE.force_speak = spoken
+        await params.result_callback({"ok": False, "error": "Bad name", "spoken_response": spoken})
         return
 
     missing = _missing(args, "caller_name", "callback_number", "message")
@@ -300,11 +425,26 @@ async def take_message(params):
             "callback_number": "What's the best callback number?",
             "message": "What message should I pass along?",
         }
-        ask = " ".join(prompts[f] for f in missing)
-        await _reject(params, missing, ask)
+        ask = prompts[missing[0]]
+        CALL_STATE.force_speak = ask
+        await params.result_callback({"ok": False, "error": f"Missing {missing}", "spoken_response": ask})
         return
 
-    rec = {"ts": datetime.datetime.now().isoformat(), **args}
+    digits = extract_phone_digits(args.get("callback_number", ""))
+    if digits is None:
+        msg = "I didn't catch your phone number clearly. Could you say it again, slowly?"
+        CALL_STATE.force_speak = msg
+        await params.result_callback({"ok": False, "error": "Bad phone", "spoken_response": msg})
+        return
+    if CALL_STATE.confirmed_phone != digits:
+        CALL_STATE.pending_phone = digits
+        spoken_back = speak_digits(digits)
+        msg = f"Just to confirm, your number is {spoken_back}. Is that right?"
+        CALL_STATE.force_speak = msg
+        await params.result_callback({"ok": False, "error": "Confirm phone", "spoken_response": msg})
+        return
+
+    rec = {"ts": datetime.datetime.now().isoformat(), **args, "callback_number": digits}
     fn = _save_record("message", rec)
     CALL_STATE.message_complete = True
     logger.info(f"Message saved -> {fn}")
@@ -329,8 +469,9 @@ tools = ToolsSchema(standard_tools=[
     FunctionSchema(
         name="book_appointment_callback",
         description=(
-            "Save a callback request after the caller has given you their name, phone number, AND preferred day/time. "
-            "Only call this once per call."
+            "Save a callback request. ONLY call this AFTER the caller has personally "
+            "told you their name, their phone number with digits, AND their preferred day/time "
+            "in this conversation. Do NOT call with placeholder values."
         ),
         properties={
             "caller_name": {"type": "string"},
@@ -343,9 +484,9 @@ tools = ToolsSchema(standard_tools=[
     FunctionSchema(
         name="take_message",
         description=(
-            "Save a message ONLY when the caller explicitly asks to leave one for the doctor or staff. "
-            "Do NOT call this when the caller says 'no', 'bye', or declines. "
-            "Do NOT call this for off-topic questions — answer those directly."
+            "Save a message ONLY when the caller has explicitly asked to leave a message "
+            "for the doctor. Do NOT call this for greetings, declines, or off-topic chat. "
+            "Do NOT call with placeholder values."
         ),
         properties={
             "caller_name": {"type": "string"},
@@ -356,10 +497,7 @@ tools = ToolsSchema(standard_tools=[
     ),
     FunctionSchema(
         name="escalate_emergency",
-        description=(
-            "Use ONLY for medical dental emergencies the caller describes: severe pain, swelling, "
-            "knocked-out tooth, bleeding, trauma. Do NOT call proactively — wait for the caller to mention symptoms."
-        ),
+        description="Use ONLY when caller describes severe pain, swelling, bleeding, knocked-out tooth, or trauma.",
         properties={"reason": {"type": "string"}},
         required=["reason"],
     ),
@@ -368,31 +506,34 @@ tools = ToolsSchema(standard_tools=[
 
 SYSTEM_PROMPT = f"""You are the receptionist at {PRACTICE['name']}, answering for {PRACTICE['doctor']}.
 
-YOUR JOB: Help one caller at a time, briefly and warmly. Most turns need NO tool — just talk.
+JOB: Help one caller, briefly and warmly. Most turns need NO tool — just talk like a normal person.
 
 FORMAT:
 - Phone call. Spoken aloud. 1-2 short sentences. No quotes, no markdown.
 - Speak numbers naturally.
 
-RULES:
-- Do NOT proactively ask "is this an emergency?" — wait for the caller to bring up symptoms.
-- Do NOT make up facts about the office (address, hours) unless asked. Use only the KNOWN INFO below.
-- After a successful tool call, the caller's task is DONE. Ask if there's anything else, then say goodbye if not.
-- When caller says "no", "bye", "thanks", "all good": say a warm goodbye. Do NOT call any tool.
-- Never invent a message to save. Only save what the caller actually said.
+CRITICAL RULES:
+- DO NOT call any tool until the caller has actually given you the required information IN THIS CONVERSATION.
+- DO NOT use placeholder values like "unknown", "<unknown>", "[name]", "null", "string". If you don't have the info, ASK the caller — do not call the tool.
+- DO NOT proactively ask "is this an emergency?" — wait for caller to mention symptoms.
+- DO NOT make up office facts. Use only KNOWN INFO below.
+- DO NOT apologize for "mistakes" — just ask the next question politely.
+- When caller says "no", "bye", "thanks", "all good", "hi": just chat back. NO tool call.
+- Greetings and farewells need NO tool call. Just respond conversationally.
 
-APPOINTMENT FLOW (ask one question at a time, then book):
-1. Caller wants an appointment → ask their name.
-2. Got name → ask callback number.
-3. Got number → ask preferred day and time.
-4. Got all three → call book_appointment_callback.
+APPOINTMENT FLOW (one question per turn, then book):
+1. Caller wants appointment → ask "What's your name?" (no tool yet)
+2. Got name → ask "What's the best callback number?" (no tool yet)
+3. Got number → repeat back, ask "Is that right?" (no tool yet)
+4. Confirmed → ask "What day and time works?" (no tool yet)
+5. Got all three pieces → NOW call book_appointment_callback with the real values.
 
-KNOWN INFO (use only when asked):
+KNOWN INFO (only when asked):
 - Hours: {PRACTICE['hours']}
 - Address: {PRACTICE['address']}
 - Emergency line: {PRACTICE['emergency_line']}
 
-GREETING (first turn only): "Thanks for calling {PRACTICE['name']}, how can I help?"
+GREETING (first turn): "Thanks for calling {PRACTICE['name']}, how can I help?"
 
 If asked for a human: "I'm an automated assistant, but I can take your information and have someone call you right back."
 """
@@ -421,7 +562,7 @@ async def main():
 
     llm = OLLamaLLMService(
         settings=OLLamaLLMService.Settings(
-            model="receptionist-llama",
+            model="receptionist-llama",   # Back to llama3.2:3b - proven on the booking flow
             temperature=0.1,
         ),
     )
@@ -439,13 +580,30 @@ async def main():
     )
     context_aggregator = LLMContextAggregatorPair(context)
 
+    class ConfirmationInterceptor(FrameProcessor):
+        async def process_frame(self, frame: Frame, direction: FrameDirection):
+            await super().process_frame(frame, direction)
+            if isinstance(frame, TranscriptionFrame) and CALL_STATE.pending_phone:
+                txt = (frame.text or "").strip()
+                if _is_caller_affirming(txt):
+                    CALL_STATE.confirmed_phone = CALL_STATE.pending_phone
+                    CALL_STATE.pending_phone = None
+                    logger.warning(f">>> Phone confirmed: {CALL_STATE.confirmed_phone} <<<")
+                elif _is_caller_declining(txt) or "wrong" in txt.lower():
+                    logger.warning(f">>> Phone rejected, clearing pending <<<")
+                    CALL_STATE.pending_phone = None
+                    CALL_STATE.confirmed_phone = None
+            await self.push_frame(frame, direction)
+
     pipeline = Pipeline([
         transport.input(),
         ManualEnergyVAD(),
         IncomingAudioLogger(),
         stt,
+        ConfirmationInterceptor(),
         context_aggregator.user(),
         llm,
+        ForcedSpeechOverride(),
         TextNormalizer(),
         tts,
         AudioRateLogger(),
@@ -468,6 +626,9 @@ async def main():
         CALL_STATE.booking_complete = False
         CALL_STATE.message_complete = False
         CALL_STATE.last_user_text = ""
+        CALL_STATE.pending_phone = None
+        CALL_STATE.confirmed_phone = None
+        CALL_STATE.force_speak = None
         context.set_messages([{"role": "system", "content": SYSTEM_PROMPT}])
         context.add_message({"role": "system", "content": "Greet the caller now."})
         await task.queue_frames([LLMContextFrame(context)])
