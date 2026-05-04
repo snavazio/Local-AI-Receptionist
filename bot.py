@@ -1,4 +1,4 @@
-"""Local AI dental receptionist - hardened against placeholder injection + over-eager tool calls."""
+"""Local AI dental receptionist - Hermes3:8b + fixed chitchat guard."""
 
 import os
 import re
@@ -195,7 +195,8 @@ class ForcedSpeechOverride(FrameProcessor):
 
 class TextNormalizer(FrameProcessor):
     LEAKED_TOKENS = ["<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>",
-                     "<|begin_of_text|>", "<|end_of_text|>"]
+                     "<|begin_of_text|>", "<|end_of_text|>",
+                     "<|im_start|>", "<|im_end|>", "<|endoftext|>"]
     LEADING_ROLE = re.compile(r"^\s*assistant\b[\s:.\-]*", re.IGNORECASE)
     WRAPPING_QUOTES = re.compile(r'^\s*"(.*)"\s*$', re.DOTALL)
 
@@ -253,23 +254,20 @@ GREETING_NOISE = {
 
 
 def _normalize_placeholder(s) -> str:
-    """Strip angle brackets, square brackets, parens, curly braces from placeholder values.
-    LLMs love wrapping placeholders in <unknown>, [name], (phone), {number}."""
     if not isinstance(s, str):
         return ""
     return re.sub(r"^[<\[\(\{]+|[>\]\)\}]+$", "", s.strip()).lower()
 
 
-def _is_short_chitchat(s: str) -> bool:
-    """If user's last utterance is just a greeting/farewell, no tool should fire."""
-    if not s:
-        return True
+def _is_known_chitchat(s: str) -> bool:
+    """Block tool calls only when user CLEARLY said a chitchat phrase.
+    Empty/missing input does NOT count as chitchat (changed from previous version)."""
+    if not s or not s.strip():
+        return False  # Don't block on empty - the LLM may have valid info from earlier turns
     norm = re.sub(r"[^\w\s']", "", s.lower()).strip()
     if not norm:
-        return True
+        return False
     if norm in NO_RESPONSES or norm in GREETING_NOISE:
-        return True
-    if len(norm.split()) < 2 and norm in {"yes", "no", "ok", "okay", "sure"}:
         return True
     return False
 
@@ -323,14 +321,14 @@ def _looks_like_garbage_name(s: str) -> bool:
 
 # ---------- Tool implementations ----------
 async def book_appointment_callback(params):
-    # Hard guard: if last user turn was just chitchat/farewell, refuse outright
-    if _is_short_chitchat(CALL_STATE.last_user_text):
-        msg = "Could I get your name to start?"
+    # Block ONLY if user just said a clear chitchat phrase like "hi" or "bye"
+    if _is_known_chitchat(CALL_STATE.last_user_text):
+        msg = "How can I help?" if CALL_STATE.last_user_text.lower() in {"hi", "hello", "hey"} else "Take care!"
         CALL_STATE.force_speak = msg
         logger.warning(f"book_appointment_callback blocked: chitchat ({CALL_STATE.last_user_text!r})")
         await params.result_callback({
             "ok": False,
-            "error": "User has not actually given any info yet. Ask for name.",
+            "error": "User just said a greeting/farewell, no booking needed.",
             "spoken_response": msg,
         })
         return
@@ -345,7 +343,7 @@ async def book_appointment_callback(params):
     args = params.arguments or {}
 
     name = (args.get("caller_name") or "").strip()
-    if _looks_like_garbage_name(name):
+    if name and _looks_like_garbage_name(name):
         msg = "Sorry, I didn't catch your name clearly. Could you say it again?"
         CALL_STATE.force_speak = msg
         logger.warning(f"Tool gating: bogus name {name!r}")
@@ -354,7 +352,6 @@ async def book_appointment_callback(params):
 
     missing = _missing(args, "caller_name", "callback_number", "preferred_window")
     if missing:
-        # Ask only for the FIRST missing field, one at a time
         prompts = {
             "caller_name": "Could I get your name?",
             "callback_number": "What's the best phone number to call you back on?",
@@ -394,7 +391,7 @@ async def book_appointment_callback(params):
 
 
 async def take_message(params):
-    if _is_short_chitchat(CALL_STATE.last_user_text):
+    if _is_known_chitchat(CALL_STATE.last_user_text):
         msg = "Take care!" if _is_caller_declining(CALL_STATE.last_user_text) else "How can I help?"
         CALL_STATE.force_speak = msg
         logger.warning(f"take_message blocked: chitchat ({CALL_STATE.last_user_text!r})")
@@ -404,7 +401,7 @@ async def take_message(params):
     args = params.arguments or {}
 
     msgtxt = (args.get("message") or "").strip()
-    if _looks_like_assistant_question(msgtxt):
+    if msgtxt and _looks_like_assistant_question(msgtxt):
         spoken = "What message should I pass along?"
         CALL_STATE.force_speak = spoken
         logger.warning(f"take_message blocked: self-question")
@@ -412,7 +409,7 @@ async def take_message(params):
         return
 
     name = (args.get("caller_name") or "").strip()
-    if _looks_like_garbage_name(name):
+    if name and _looks_like_garbage_name(name):
         spoken = "Sorry, I didn't catch your name clearly. Could you say it again?"
         CALL_STATE.force_speak = spoken
         await params.result_callback({"ok": False, "error": "Bad name", "spoken_response": spoken})
@@ -469,8 +466,8 @@ tools = ToolsSchema(standard_tools=[
     FunctionSchema(
         name="book_appointment_callback",
         description=(
-            "Save a callback request. ONLY call this AFTER the caller has personally "
-            "told you their name, their phone number with digits, AND their preferred day/time "
+            "Save a callback request. ONLY call AFTER the caller has personally told you "
+            "their name, their phone number with digits, AND their preferred day/time "
             "in this conversation. Do NOT call with placeholder values."
         ),
         properties={
@@ -484,8 +481,8 @@ tools = ToolsSchema(standard_tools=[
     FunctionSchema(
         name="take_message",
         description=(
-            "Save a message ONLY when the caller has explicitly asked to leave a message "
-            "for the doctor. Do NOT call this for greetings, declines, or off-topic chat. "
+            "Save a message ONLY when caller has explicitly asked to leave a message "
+            "for the doctor. Do NOT call for greetings, declines, or off-topic chat. "
             "Do NOT call with placeholder values."
         ),
         properties={
@@ -519,7 +516,6 @@ CRITICAL RULES:
 - DO NOT make up office facts. Use only KNOWN INFO below.
 - DO NOT apologize for "mistakes" — just ask the next question politely.
 - When caller says "no", "bye", "thanks", "all good", "hi": just chat back. NO tool call.
-- Greetings and farewells need NO tool call. Just respond conversationally.
 
 APPOINTMENT FLOW (one question per turn, then book):
 1. Caller wants appointment → ask "What's your name?" (no tool yet)
@@ -535,7 +531,7 @@ KNOWN INFO (only when asked):
 
 GREETING (first turn): "Thanks for calling {PRACTICE['name']}, how can I help?"
 
-If asked for a human: "I'm an automated assistant, but I can take your information and have someone call you right back."
+If asked for human: "I'm an automated assistant, but I can take your information and have someone call you right back."
 """
 
 
@@ -562,7 +558,7 @@ async def main():
 
     llm = OLLamaLLMService(
         settings=OLLamaLLMService.Settings(
-            model="receptionist-llama",   # Back to llama3.2:3b - proven on the booking flow
+            model="receptionist-hermes",
             temperature=0.1,
         ),
     )
