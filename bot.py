@@ -6,8 +6,8 @@ Runs entirely on local infrastructure:
   - TTS: Piper (en_US-lessac-medium)
   - Transport: WebSocket (test client connects directly)
 
-For session 1, customer audio is decoded locally; nothing leaves the box
-except via Ollama's localhost API.
+Adds an AudioRateLogger between TTS and transport to verify the rate
+that Piper is actually emitting at runtime.
 """
 
 import os
@@ -24,7 +24,8 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
-from pipecat.frames.frames import LLMContextFrame
+from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+from pipecat.frames.frames import LLMContextFrame, OutputAudioRawFrame, Frame
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 
@@ -53,6 +54,24 @@ PRACTICE = {
 PIPER_VOICE = os.path.expanduser("~/piper-voices/en_US-lessac-medium.onnx")
 LOG_DIR = Path("./call_logs")
 LOG_DIR.mkdir(exist_ok=True)
+
+
+# ---------- Debug processor: log audio frame sample rate ----------
+class AudioRateLogger(FrameProcessor):
+    """Log every audio frame's sample rate to confirm what's hitting the transport."""
+    def __init__(self):
+        super().__init__()
+        self._logged = 0
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, OutputAudioRawFrame) and self._logged < 5:
+            logger.warning(
+                f"AUDIO_DEBUG: rate={frame.sample_rate} bytes={len(frame.audio)} "
+                f"channels={frame.num_channels}"
+            )
+            self._logged += 1
+        await self.push_frame(frame, direction)
 
 
 # ---------- Tool implementations (logging stubs for now) ----------
@@ -104,14 +123,14 @@ tools = ToolsSchema(standard_tools=[
         properties={
             "caller_name": {"type": "string", "description": "Caller's full name"},
             "callback_number": {"type": "string", "description": "Best phone number for callback"},
-            "preferred_window": {"type": "string", "description": "Preferred day/time window, e.g. 'Tuesday afternoon'"},
+            "preferred_window": {"type": "string", "description": "Preferred day/time window"},
             "reason": {"type": "string", "description": "Brief reason: cleaning, pain, consultation, etc."},
         },
         required=["caller_name", "callback_number", "preferred_window"],
     ),
     FunctionSchema(
         name="take_message",
-        description="Use when caller wants to leave a message that isn't an appointment - billing, asking the doctor a question, etc.",
+        description="Use when caller wants to leave a message that isn't an appointment.",
         properties={
             "caller_name": {"type": "string"},
             "callback_number": {"type": "string"},
@@ -163,7 +182,7 @@ Be warm, brief, and competent. Patients are often anxious. Get them sorted quick
 
 
 # ---------- Bot entry point ----------
-async def main():    
+async def main():
     transport = WebsocketServerTransport(
         host="0.0.0.0",
         port=8765,
@@ -205,6 +224,7 @@ async def main():
         context_aggregator.user(),
         llm,
         tts,
+        AudioRateLogger(),
         transport.output(),
         context_aggregator.assistant(),
     ])
@@ -213,7 +233,7 @@ async def main():
         pipeline,
         params=PipelineParams(
             audio_in_sample_rate=16000,
-            audio_out_sample_rate=22050,  # Piper lessac-medium native rate
+            audio_out_sample_rate=22050,
             allow_interruptions=True,
         ),
     )
@@ -231,7 +251,7 @@ async def main():
         log_path = LOG_DIR / f"call_{ts}.json"
         log_path.write_text(json.dumps(transcript, indent=2, default=str))
         logger.info(f"Call ended. Transcript -> {log_path}")
-        # await task.cancel()  # disabled: keep server alive across reconnects
+        # await task.cancel()
 
     runner = PipelineRunner(handle_sigint=True)
     await runner.run(task)
