@@ -1,4 +1,4 @@
-"""Local AI dental receptionist - tightened tool gating and turn timing."""
+"""Local AI dental receptionist - code-enforced tool gating."""
 
 import os
 import re
@@ -49,19 +49,11 @@ LOG_DIR = Path("./call_logs")
 LOG_DIR.mkdir(exist_ok=True)
 
 
-# ---------- Manual VAD with longer stop window for natural turn-taking ----------
+# ---------- Manual VAD ----------
 class ManualEnergyVAD(FrameProcessor):
-    """Inline energy-based VAD.
-
-    Pipecat 1.x WebsocketServerInputTransport doesn't invoke VAD analyzers, so
-    we synthesize speaking frames ourselves. We emit BOTH:
-      - UserStartedSpeakingFrame / UserStoppedSpeakingFrame  (for UI / RTVI clients)
-      - VADUserStartedSpeakingFrame / VADUserStoppedSpeakingFrame  (for SegmentedSTTService)
-    """
-
-    RMS_THRESHOLD = 800.0       # int16 RMS for "speech"
-    START_FRAMES = 5            # ~100ms loud => speaking
-    STOP_FRAMES = 55            # ~1.1s silence => stopped (was 30 = 600ms)
+    RMS_THRESHOLD = 800.0
+    START_FRAMES = 5
+    STOP_FRAMES = 55     # ~1.1s silence
 
     def __init__(self):
         super().__init__()
@@ -71,11 +63,9 @@ class ManualEnergyVAD(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-
         if isinstance(frame, InputAudioRawFrame):
             audio = np.frombuffer(frame.audio, dtype=np.int16)
             rms = float(np.sqrt(np.mean(audio.astype(np.float32) ** 2))) if len(audio) else 0.0
-
             if rms >= self.RMS_THRESHOLD:
                 self._loud_count += 1
                 self._silent_count = 0
@@ -92,7 +82,6 @@ class ManualEnergyVAD(FrameProcessor):
                     logger.warning(">>> ManualVAD: STOPPED <<<")
                     await self.push_frame(VADUserStoppedSpeakingFrame(), direction)
                     await self.push_frame(UserStoppedSpeakingFrame(), direction)
-
         await self.push_frame(frame, direction)
 
 
@@ -100,7 +89,6 @@ class AudioRateLogger(FrameProcessor):
     def __init__(self):
         super().__init__()
         self._logged = 0
-
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, OutputAudioRawFrame) and self._logged < 3:
@@ -113,25 +101,22 @@ class IncomingAudioLogger(FrameProcessor):
     def __init__(self):
         super().__init__()
         self._first_audio_logged = False
-
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, InputAudioRawFrame) and not self._first_audio_logged:
             self._first_audio_logged = True
-            logger.warning(
-                f">>> First InputAudio: rate={frame.sample_rate} channels={frame.num_channels} bytes={len(frame.audio)} <<<"
-            )
+            logger.warning(f">>> First InputAudio: rate={frame.sample_rate} bytes={len(frame.audio)} <<<")
         elif isinstance(frame, TranscriptionFrame):
             logger.warning(f">>> WHISPER: {frame.text!r} <<<")
         await self.push_frame(frame, direction)
 
 
 class LlamaTokenStripper(FrameProcessor):
-    LEAKED_TOKENS = [
-        "<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>",
-        "<|begin_of_text|>", "<|end_of_text|>",
-    ]
+    LEAKED_TOKENS = ["<|start_header_id|>", "<|end_header_id|>", "<|eot_id|>",
+                     "<|begin_of_text|>", "<|end_of_text|>"]
     LEADING_ROLE = re.compile(r"^\s*assistant\b[\s:.\-]*", re.IGNORECASE)
+    # Strip leading/trailing wrapping quotes that LLM sometimes emits around whole reply
+    WRAPPING_QUOTES = re.compile(r'^\s*"(.*)"\s*$', re.DOTALL)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -142,6 +127,9 @@ class LlamaTokenStripper(FrameProcessor):
                 for tok in self.LEAKED_TOKENS:
                     cleaned = cleaned.replace(tok, "")
                 cleaned = self.LEADING_ROLE.sub("", cleaned)
+                m = self.WRAPPING_QUOTES.match(cleaned)
+                if m:
+                    cleaned = m.group(1)
                 if cleaned != txt:
                     try:
                         setattr(frame, "text", cleaned)
@@ -156,27 +144,81 @@ def _save_record(kind: str, data: dict) -> Path:
     return fn
 
 
+# ---------- Code-enforced gating helpers ----------
+def _missing(args: dict, *fields) -> list:
+    """Return list of fields that are absent, empty, or placeholder ('unknown', 'n/a')."""
+    bad = {"", "unknown", "none", "null", "n/a", "na", "tbd", "to be determined"}
+    out = []
+    for f in fields:
+        v = args.get(f)
+        if v is None:
+            out.append(f); continue
+        if isinstance(v, str) and v.strip().lower() in bad:
+            out.append(f); continue
+        if isinstance(v, str) and not v.strip():
+            out.append(f)
+    return out
+
+
+async def _reject(params, missing_fields: list, friendly: str):
+    """Reject the tool call - tells LLM to ask caller for missing fields instead of booking."""
+    msg = (
+        f"VALIDATION ERROR: missing required fields {missing_fields}. "
+        f"DO NOT call this tool again until you have collected ALL required fields from the caller. "
+        f"Instead, ask the caller for the missing information now. "
+        f"Suggested next message to caller: {friendly!r}"
+    )
+    logger.warning(f"Tool gating rejected: missing={missing_fields}")
+    await params.result_callback({"ok": False, "error": msg, "spoken_response": friendly})
+
+
 async def book_appointment_callback(params):
-    rec = {"ts": datetime.datetime.now().isoformat(), **params.arguments}
+    args = params.arguments or {}
+    missing = _missing(args, "caller_name", "callback_number", "preferred_window")
+    if missing:
+        prompts = {
+            "caller_name": "Could I get your name?",
+            "callback_number": "What's the best phone number to call you back on?",
+            "preferred_window": "What day and time works best for you?",
+        }
+        ask = " ".join(prompts[f] for f in missing)
+        await _reject(params, missing, ask)
+        return
+    rec = {"ts": datetime.datetime.now().isoformat(), **args}
     fn = _save_record("callback", rec)
     logger.info(f"Booking callback queued -> {fn}")
-    await params.result_callback({"ok": True, "spoken_response": "Got it. Someone will call you back shortly to confirm the time."})
+    await params.result_callback({
+        "ok": True,
+        "spoken_response": "Got it. Someone from the office will call you back shortly to confirm the time.",
+    })
 
 
 async def take_message(params):
-    rec = {"ts": datetime.datetime.now().isoformat(), **params.arguments}
+    args = params.arguments or {}
+    missing = _missing(args, "caller_name", "callback_number", "message")
+    if missing:
+        prompts = {
+            "caller_name": "Could I get your name?",
+            "callback_number": "What's the best callback number?",
+            "message": "What message should I pass along?",
+        }
+        ask = " ".join(prompts[f] for f in missing)
+        await _reject(params, missing, ask)
+        return
+    rec = {"ts": datetime.datetime.now().isoformat(), **args}
     fn = _save_record("message", rec)
     logger.info(f"Message saved -> {fn}")
     await params.result_callback({"ok": True, "spoken_response": "Message saved. The office will reach out soon."})
 
 
 async def escalate_emergency(params):
-    rec = {"ts": datetime.datetime.now().isoformat(), **params.arguments}
+    args = params.arguments or {}
+    rec = {"ts": datetime.datetime.now().isoformat(), **args}
     fn = _save_record("escalation", rec)
     logger.warning(f"Emergency escalation -> {fn}")
     await params.result_callback({
         "ok": True,
-        "spoken_response": f"For dental emergencies please hang up and call {PRACTICE['emergency_line']} immediately."
+        "spoken_response": f"For dental emergencies please hang up and call {PRACTICE['emergency_line']} immediately.",
     })
 
 
@@ -184,86 +226,67 @@ tools = ToolsSchema(standard_tools=[
     FunctionSchema(
         name="book_appointment_callback",
         description=(
-            "Call this ONLY after you have collected ALL THREE required fields from the caller: "
-            "their name, their callback phone number, and their preferred appointment window "
-            "(e.g. 'Tuesday morning'). Do NOT call this with empty or 'unknown' values. "
-            "If any field is missing, ask the caller for it instead of calling this tool."
+            "Save a callback request after you have collected the caller's name, phone number, AND preferred day/time. "
+            "If you don't have all three, ask the caller for what's missing — do not call this tool yet."
         ),
         properties={
-            "caller_name": {"type": "string", "description": "Caller's full name as they stated it."},
-            "callback_number": {"type": "string", "description": "Phone number caller gave for callback."},
-            "preferred_window": {"type": "string", "description": "Day and time-of-day preference."},
-            "reason": {"type": "string", "description": "Reason for visit, e.g. 'cleaning', 'toothache'."},
+            "caller_name": {"type": "string"},
+            "callback_number": {"type": "string"},
+            "preferred_window": {"type": "string"},
+            "reason": {"type": "string"},
         },
         required=["caller_name", "callback_number", "preferred_window"],
     ),
     FunctionSchema(
         name="take_message",
         description=(
-            "Call this ONLY when the caller EXPLICITLY asks to leave a message for the staff or doctor "
-            "(e.g. 'Can you tell Dr. Smith...', 'Please leave a message saying...', 'I want to leave a note'). "
-            "Do NOT call this for general questions, off-topic questions, social chat, or anything you can answer "
-            "directly. Just answer those in your own words."
+            "Save a message ONLY when the caller explicitly asks to leave a message for the doctor or staff. "
+            "Do not call this for off-topic questions — just answer those in your own words."
         ),
         properties={
             "caller_name": {"type": "string"},
             "callback_number": {"type": "string"},
-            "message": {"type": "string", "description": "The exact message the caller asked to relay."},
+            "message": {"type": "string"},
         },
         required=["caller_name", "callback_number", "message"],
     ),
     FunctionSchema(
         name="escalate_emergency",
         description=(
-            "Call this ONLY for ACTUAL DENTAL EMERGENCIES with clear medical urgency: "
-            "severe tooth pain, facial swelling, knocked-out tooth, uncontrolled bleeding, trauma to mouth/jaw. "
-            "Do NOT call this for: requests to speak with a manager, general complaints, scheduling questions, "
-            "or non-medical issues. For those, use take_message or just answer directly."
+            "Use ONLY for medical dental emergencies: severe pain, swelling, knocked-out tooth, bleeding, trauma. "
+            "Do not call this for non-medical requests like 'speak to a manager'."
         ),
-        properties={
-            "reason": {"type": "string", "description": "Specific emergency symptom described by caller."},
-        },
+        properties={"reason": {"type": "string"}},
         required=["reason"],
     ),
 ])
 
 
-SYSTEM_PROMPT = f"""You are the receptionist for {PRACTICE['name']}, answering for {PRACTICE['doctor']}.
+SYSTEM_PROMPT = f"""You are the receptionist at {PRACTICE['name']}, answering for {PRACTICE['doctor']}.
 
 VOICE FORMAT:
 - Phone call. Output is spoken aloud.
-- 1-2 short sentences. No markdown.
+- 1-2 short sentences. No markdown. No surrounding quotes.
 - Speak numbers naturally.
 
-CRITICAL TOOL RULES:
-- Most caller turns DO NOT need a tool. Just answer in your own words.
-- Tools are for SAVING DATA, not for replying. The reply happens after the tool returns.
-- For off-topic questions ("do you sell cake?", "can you fix my car?", "can you be my friend?"):
-  Just answer politely in your own words. DO NOT call take_message.
-- For requests to speak to a human/manager: politely say you're an automated assistant and offer
-  to take a message OR have someone call them back. DO NOT call escalate_emergency.
-- escalate_emergency is ONLY for medical dental emergencies (severe pain, swelling, bleeding, trauma).
+RESPONSE STYLE:
+- Most caller turns: just answer in your own words. Tools are rare.
+- For greetings, off-topic questions, social chat: just respond conversationally.
+- Only call a tool when you actually have data to save.
 
-APPOINTMENT FLOW:
-1. Caller says they want an appointment.
-2. Ask for their name.
-3. Ask for their callback number.
-4. Ask for their preferred day and time-of-day window.
-5. Optionally ask reason for visit.
-6. ONLY THEN call book_appointment_callback with all fields filled in.
-7. Confirm: "Got it, someone will call you back shortly to confirm."
-NEVER call book_appointment_callback with blank or 'unknown' fields. Ask first.
+APPOINTMENTS (multi-turn flow):
+- When caller wants an appointment, do NOT call book_appointment_callback yet.
+- Instead, ask one question at a time to collect: name, callback number, preferred day+time.
+- Only after you have ALL THREE, call book_appointment_callback.
 
-KNOWN INFO YOU CAN ANSWER DIRECTLY:
+KNOWN INFO YOU CAN ANSWER:
 - Hours: {PRACTICE['hours']}
 - Address: {PRACTICE['address']}
 - Emergency line: {PRACTICE['emergency_line']}
 
-GREETING:
-"Thanks for calling {PRACTICE['name']}, how can I help?"
+GREETING (only on first turn): "Thanks for calling {PRACTICE['name']}, how can I help?"
 
-NEVER quote prices, confirm exact times, or give medical advice.
-If caller asks for a human: "I'm an automated assistant, but I can take your information and have someone call you right back."
+If asked for a human: "I'm an automated assistant, but I can take your information and have someone call you right back."
 
 Be warm, brief, competent.
 """
