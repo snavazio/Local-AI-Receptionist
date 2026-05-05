@@ -381,6 +381,12 @@ class MalformedToolCallStripper(FrameProcessor):
         re.compile(r"</\s*tool_call\s*>", re.IGNORECASE),
         re.compile(r"_icall_[^\s]*", re.IGNORECASE),
         re.compile(r"\biNdEx[^\s]*", re.IGNORECASE),
+        # Token-name / Token-number self-prompt scaffolding the model
+        # sometimes emits when it's hallucinating a multi-turn exchange.
+        re.compile(r"\bTokenName\s*:.*$", re.DOTALL),
+        re.compile(r"\bTokenNumber\s*:.*$", re.DOTALL),
+        re.compile(r"\bCallableWrapper\b[^\s]*"),
+        re.compile(r"\bSupportedContent\b[^\s]*"),
         # Bare JSON tool-call object, e.g. {"name": "foo", "arguments": {...}}
         re.compile(
             r'\{\s*"name"\s*:\s*"[A-Za-z_][\w]*"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}',
@@ -723,6 +729,8 @@ SYSTEM_PROMPT = f"""You are Sarah, the AI assistant for {PRACTICE['name']} (answ
 On the first turn, greet the caller with EXACTLY this sentence and nothing else: "Thanks for calling Smith Family Dental. This is Sarah, the AI assistant. How can I help you today?" If a caller asks whether you are a person or a bot, answer honestly that you are an AI assistant.
 
 Speak in 1-2 short sentences per turn. This is a phone call — no markdown, no quotes, speak numbers naturally.
+
+Generate exactly ONE assistant turn at a time. Ask one question, then stop and wait for the caller to actually answer. Never write the caller's reply yourself, never use placeholders like "TokenName:" / "TokenNumber:" / "[user response]", never imagine a multi-turn exchange in a single response. After your one turn, stop.
 
 When you read a phone number aloud, spell each digit as a separate word, grouped naturally (area code / prefix / line number). Never speak it as a single big number, never spell with dashes. Critically: never invent or default to a phone number — only ever speak digits the caller actually gave you in this conversation.
 
