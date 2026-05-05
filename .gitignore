@@ -177,3 +177,6 @@ eval/report_shard*.md
 eval/baseline.json
 eval/history.jsonl
 eval/regression_report.md
+
+# Audio fixtures (regenerate via tools/gen_audio_fixtures.py)
+tests/audio_fixtures/
