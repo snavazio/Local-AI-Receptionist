@@ -80,6 +80,36 @@ python eval/run_eval.py --concurrency 4 --model qwen2.5:7b
 
 Current baseline: **80/100** on Qwen 2.5 14B Q4. The remaining gap is concentrated in the message-taking flow (~6/10 fail) where the LLM gathers slots correctly but drifts away from invoking the tool — this is what `bot_flows.py` exists to fix.
 
+### Regression watcher
+
+`eval/watch.py` runs the eval, compares against the previous accepted run, and emits a focused diff report. Cron-friendly: it exits non-zero when a case newly fails or LLM p95 spikes by >1s, so a scheduler can flag the owner.
+
+```bash
+# First run: establishes the baseline.
+python eval/watch.py
+
+# Subsequent runs: compares to baseline, updates only if no regression.
+python eval/watch.py
+
+# Force a new baseline after an intentional change.
+python eval/watch.py --update-baseline
+
+# Compare without overwriting (e.g. CI).
+python eval/watch.py --no-update
+```
+
+State files (gitignored):
+
+- `eval/baseline.json` — last accepted run
+- `eval/history.jsonl` — append-only trend log
+- `eval/regression_report.md` — most recent diff report
+
+Schedule it from cron / systemd timer / GitHub Actions. Example crontab line for a nightly 2 AM run that posts the report on regression:
+
+```cron
+0 2 * * * cd /path/to/Local-AI-Receptionist && .venv/bin/python eval/watch.py >> eval/cron.log 2>&1 || mail -s "Receptionist regression" you@example.com < eval/regression_report.md
+```
+
 ## Two bot variants
 
 - **`bot.py`** — the live, free-form-LLM-with-tool-calling implementation. What the README setup steps run.

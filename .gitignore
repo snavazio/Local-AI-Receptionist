@@ -173,3 +173,7 @@ eval/report.md
 eval/report_*.md
 eval/run_*.log
 eval/report_shard*.md
+
+eval/baseline.json
+eval/history.jsonl
+eval/regression_report.md
