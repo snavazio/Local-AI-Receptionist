@@ -144,6 +144,25 @@ def normalize_for_tts(text: str) -> str:
     return PHONE_PATTERN.sub(lambda m: speak_digits(m.group(0)), text)
 
 
+_WORD_TO_DIGIT = {
+    "zero": "0", "oh": "0", "o": "0",
+    "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9",
+}
+
+
+def _words_to_digits(text: str) -> str:
+    """Convert any digit-words in text to digits in place. 'two zero one' -> '201'.
+    Other tokens are dropped — we only return digit characters."""
+    out = []
+    for tok in re.findall(r"[a-zA-Z]+|\d", text.lower()):
+        if tok.isdigit():
+            out.append(tok)
+        elif tok in _WORD_TO_DIGIT:
+            out.append(_WORD_TO_DIGIT[tok])
+    return "".join(out)
+
+
 def extract_phone_digits(text: str) -> str | None:
     if not text:
         return None
@@ -155,6 +174,10 @@ def extract_phone_digits(text: str) -> str | None:
         d = re.sub(r"\D", "", m.group(0))
         if 7 <= len(d) <= 11:
             return d
+    # Fallback: model passed phone as spelled-out words ("two zero one...").
+    word_digits = _words_to_digits(text)
+    if 7 <= len(word_digits) <= 11:
+        return word_digits
     return None
 
 
@@ -259,6 +282,68 @@ class ForcedSpeechOverride(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class MalformedToolCallStripper(FrameProcessor):
+    """Catch tool-calls that the LLM emitted as plain text instead of via the
+    structured function-calling API, and drop them before TTS speaks them.
+
+    Local 8-14B models (Hermes, Qwen, Llama) sometimes hallucinate corrupted
+    fragments of their own tool-call template — things like:
+        <tool_call>{"name": "escalate_emergency", ...}</tool_call>
+        _icall_{"name": "...", "arguments": {...}}
+         iNdEx_icall_{...}
+    If those reach Piper, the caller hears literal gibberish ("eye-call-name-
+    quote-escalate-emergency..."). The eval surfaced this most dangerously in
+    the emergency category — exactly the path where it must not fail.
+
+    Strategy: detect the pattern in any text-bearing frame; if found, strip
+    the malformed segment. If nothing legible is left, drop the frame entirely.
+    Don't try to re-issue it as a real tool call here — that's harder than it
+    sounds, and the LLM will usually emit a proper call on the next turn."""
+
+    # Markers that indicate text-form tool-call leakage. Order matters: the
+    # broadest patterns last.
+    PATTERNS = [
+        re.compile(r"<\s*tool_call\s*>.*?</\s*tool_call\s*>", re.DOTALL | re.IGNORECASE),
+        re.compile(r"<\s*tool_call\s*>.*", re.DOTALL | re.IGNORECASE),  # unterminated
+        re.compile(r"</\s*tool_call\s*>", re.IGNORECASE),
+        re.compile(r"_icall_[^\s]*", re.IGNORECASE),
+        re.compile(r"\biNdEx[^\s]*", re.IGNORECASE),
+        # Bare JSON tool-call object, e.g. {"name": "foo", "arguments": {...}}
+        re.compile(
+            r'\{\s*"name"\s*:\s*"[A-Za-z_][\w]*"\s*,\s*"arguments"\s*:\s*\{[^}]*\}\s*\}',
+            re.DOTALL,
+        ),
+    ]
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if hasattr(frame, "text"):
+            txt = getattr(frame, "text", None)
+            if isinstance(txt, str) and txt.strip():
+                cleaned = txt
+                hit = False
+                for pat in self.PATTERNS:
+                    new = pat.sub(" ", cleaned)
+                    if new != cleaned:
+                        hit = True
+                        cleaned = new
+                if hit:
+                    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+                    if not cleaned:
+                        logger.warning(f">>> MalformedToolCallStripper: dropped frame {txt!r}")
+                        return
+                    logger.warning(
+                        f">>> MalformedToolCallStripper: cleaned {txt!r} -> {cleaned!r}"
+                    )
+                    try:
+                        setattr(frame, "text", cleaned)
+                    except Exception:
+                        pass
+
+        await self.push_frame(frame, direction)
+
+
 class FarewellDeduper(FrameProcessor):
     """Suppress every farewell-shaped sentence after the first in an assistant turn.
 
@@ -334,6 +419,7 @@ PLACEHOLDER_VALUES = {
     "string", "name", "phone", "number", "callback_number", "caller_name",
     "message", "the caller", "caller", "user", "anonymous", "no name",
     "no number", "not provided", "not given", "nil",
+    "john doe", "jane doe", "john smith", "jane smith", "test", "test user",
 }
 
 NO_RESPONSES = {
@@ -385,7 +471,7 @@ def _missing(args: dict, *fields) -> list:
         if normalized in PLACEHOLDER_VALUES:
             out.append(f)
             continue
-        if f == "callback_number" and not re.search(r"\d", v):
+        if f == "callback_number" and extract_phone_digits(v) is None:
             out.append(f)
             continue
         if f == "caller_name" and len(normalized) < 2:
@@ -606,9 +692,11 @@ If you only hear a vague answer like "afternoon" or a single unclear word, ask t
 
 Once you have name + phone + a specific preferred day/time, call book_appointment_callback with the real values the caller gave you.
 
+When you invoke any tool, you MUST use the structured function-calling API. Never write a tool call as plain text, JSON, XML, or pseudo-code in your spoken reply (no `<tool_call>` tags, no `_icall_...`, no `{{"name": ..., "arguments": ...}}` text). The caller is on a phone — they would hear that as gibberish.
+
 After the booking tool returns ok:true, the request IS saved — confirm briefly and ask "Anything else I can help with?". Never apologize for a "glitch", never claim something went wrong, and never offer to redo the booking unless the caller explicitly says some specific detail (name/phone/time) is wrong.
 
-If the caller wants to leave a message instead, gather name + callback number + message, then call take_message.
+If the caller wants to leave a message instead, gather name + callback number + message, then call take_message. NEVER invent a name (no "John Doe", no placeholders). If the caller has not said their name in this conversation, ASK for it before calling take_message. As soon as you have all three slots, call take_message immediately — do not announce that you're about to save it; just call the tool.
 If the caller describes severe pain, swelling, bleeding, or trauma, call escalate_emergency.
 
 Office info (share when asked):
@@ -644,7 +732,7 @@ async def main():
     llm = OLLamaLLMService(
         settings=OLLamaLLMService.Settings(
             model="qwen2.5:14b",
-            temperature=0.1,
+            temperature=0,
         ),
     )
     llm.register_function("book_appointment_callback", book_appointment_callback)
@@ -685,6 +773,7 @@ async def main():
         context_aggregator.user(),
         llm,
         ForcedSpeechOverride(),
+        MalformedToolCallStripper(),
         farewell_deduper := FarewellDeduper(),
         TextNormalizer(),
         tts,

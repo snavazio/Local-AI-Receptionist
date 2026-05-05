@@ -166,3 +166,7 @@ templates/streams.xml
 call_logs/
 *.onnx
 *.onnx.json
+
+# Eval artifacts
+eval/run.log
+eval/report.md
