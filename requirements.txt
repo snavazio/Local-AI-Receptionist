@@ -1,0 +1,14 @@
+# Core framework
+pipecat-ai[websocket]>=1.1.0,<2.0.0
+
+# STT — faster-whisper (required by WhisperSTTService)
+faster-whisper>=1.0.0
+
+# TTS — Piper
+piper-tts>=1.2.0
+
+# Runtime utilities
+python-dotenv>=1.0.0
+
+# Numeric / audio helpers (also pulled in by pipecat, pinned here for clarity)
+numpy>=1.26.4
