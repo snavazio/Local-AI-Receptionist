@@ -1,0 +1,24 @@
+# Pre-commit hooks: gate every commit on the unit test suite.
+#
+# Install once with:
+#   uv pip install pre-commit
+#   pre-commit install
+#
+# After that, `git commit` will block on any failing test.
+
+repos:
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest unit tests
+        entry: .venv/bin/python -m pytest -q
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: lint-syntax
+        name: ast.parse syntax check
+        entry: .venv/bin/python -c "import sys, ast; [ast.parse(open(f).read()) for f in sys.argv[1:]]"
+        language: system
+        types: [python]
