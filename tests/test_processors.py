@@ -142,8 +142,11 @@ class TestSystemPromptContract:
 
     def test_phone_words_rule_present(self):
         # Essential: prevents '201-388-2149' from streaming through TTS
-        # in chunks the regex can't match.
-        assert "spelled out as words" in bot.SYSTEM_PROMPT.lower()
+        # in chunks the regex can't match. Also forbids the model from
+        # defaulting to an example number (a regression we observed).
+        s = bot.SYSTEM_PROMPT.lower()
+        assert "spell each digit" in s and "as a separate word" in s
+        assert "never invent or default to a phone number" in s
 
     def test_no_calendar_rule_present(self):
         # Essential: prevents the model from inventing slot times.

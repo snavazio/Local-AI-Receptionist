@@ -104,8 +104,9 @@ async def set_name(flow_manager: FlowManager, caller_name: str):
 
 @flows_direct_function()
 async def set_phone(flow_manager: FlowManager, callback_number: str):
-    """Record the caller's callback phone number. Pass digits or word-form
-    ('two zero one three eight eight two one four nine') — both work."""
+    """Record the caller's callback phone number. Pass exactly what the caller
+    spoke — either digit form or spelled-out word form is fine; do not invent
+    digits the caller did not say."""
     digits = extract_phone_digits(callback_number or "")
     if digits is None or len(digits) < 7:
         return {"status": "bad_phone"}, collect_phone_node()
