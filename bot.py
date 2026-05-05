@@ -3,6 +3,7 @@
 import os
 import re
 import json
+import time
 import datetime
 import numpy as np
 from pathlib import Path
@@ -214,6 +215,80 @@ class ManualEnergyVAD(FrameProcessor):
                     logger.warning(">>> ManualVAD: STOPPED <<<")
                     await self.push_frame(VADUserStoppedSpeakingFrame(), direction)
                     await self.push_frame(UserStoppedSpeakingFrame(), direction)
+        await self.push_frame(frame, direction)
+
+
+class TurnLatencyTracker(FrameProcessor):
+    """Time each turn's STT / LLM / TTS stages.
+
+    Watches the four checkpoints that bound a turn:
+        end-of-user-speech   ->  TranscriptionFrame   ->  first LLM text/tool   ->  first audio out
+                          (stt_ms)              (llm_ms)                  (tts_ms)
+    Logs one line per turn and appends to call_logs/latency_<ts>.jsonl so we
+    can answer 'how many concurrent callers can this stack handle' with real
+    numbers, not guesses.
+
+    Place near the end of the pipeline (before transport.output()) so it sees
+    every frame type after all upstream processing."""
+
+    LATENCY_LOG = LOG_DIR / f"latency_{datetime.datetime.now():%Y%m%d_%H%M%S}.jsonl"
+
+    def __init__(self):
+        super().__init__()
+        self._t_user_stop = None
+        self._t_transcription = None
+        self._t_llm_first = None
+        self._turn_id = 0
+
+    def _log_turn(self, **fields):
+        rec = {"ts": datetime.datetime.now().isoformat(), **fields}
+        try:
+            with open(self.LATENCY_LOG, "a") as f:
+                f.write(json.dumps(rec) + "\n")
+        except Exception:
+            pass
+        logger.info(f"latency turn={self._turn_id} {fields}")
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        now = time.monotonic()
+
+        if isinstance(frame, UserStoppedSpeakingFrame):
+            self._turn_id += 1
+            self._t_user_stop = now
+            self._t_transcription = None
+            self._t_llm_first = None
+        elif isinstance(frame, TranscriptionFrame) and self._t_user_stop is not None:
+            stt_ms = int((now - self._t_user_stop) * 1000)
+            self._t_transcription = now
+            self._stt_ms = stt_ms
+        elif (
+            self._t_transcription is not None
+            and self._t_llm_first is None
+            and hasattr(frame, "text")
+            and isinstance(getattr(frame, "text", None), str)
+            and getattr(frame, "text").strip()
+        ):
+            llm_ms = int((now - self._t_transcription) * 1000)
+            self._t_llm_first = now
+            self._llm_ms = llm_ms
+        elif (
+            isinstance(frame, OutputAudioRawFrame)
+            and self._t_llm_first is not None
+            and self._t_user_stop is not None
+        ):
+            tts_ms = int((now - self._t_llm_first) * 1000)
+            total_ms = int((now - self._t_user_stop) * 1000)
+            self._log_turn(
+                stt_ms=getattr(self, "_stt_ms", None),
+                llm_ms=getattr(self, "_llm_ms", None),
+                tts_ms=tts_ms,
+                total_ms=total_ms,
+            )
+            self._t_user_stop = None
+            self._t_transcription = None
+            self._t_llm_first = None
+
         await self.push_frame(frame, direction)
 
 
@@ -507,83 +582,26 @@ def _looks_like_garbage_name(s: str) -> bool:
 
 
 # ---------- Tool implementations ----------
-async def book_appointment_callback(params):
-    # Block ONLY if user just said a clear chitchat phrase like "hi" or "bye"
-    if _is_known_chitchat(CALL_STATE.last_user_text):
-        msg = "How can I help?" if CALL_STATE.last_user_text.lower() in {"hi", "hello", "hey"} else "Take care!"
-        CALL_STATE.force_speak = msg
-        logger.warning(f"book_appointment_callback blocked: chitchat ({CALL_STATE.last_user_text!r})")
-        await params.result_callback({
-            "ok": False,
-            "error": "User just said a greeting/farewell, no booking needed.",
-            "spoken_response": msg,
-        })
-        return
-
-    if CALL_STATE.booking_complete:
-        msg = "We've already got your callback scheduled. Anything else?"
-        CALL_STATE.force_speak = msg
-        logger.warning("book_appointment_callback called after booking complete - ignoring")
-        await params.result_callback({"ok": False, "error": "Already booked", "spoken_response": msg})
-        return
-
-    args = params.arguments or {}
-
-    name = (args.get("caller_name") or "").strip()
-    if name and _looks_like_garbage_name(name):
-        msg = "Sorry, I didn't catch your name clearly. Could you say it again?"
-        CALL_STATE.force_speak = msg
-        logger.warning(f"Tool gating: bogus name {name!r}")
-        await params.result_callback({"ok": False, "error": f"Bad name {name!r}", "spoken_response": msg})
-        return
-
-    missing = _missing(args, "caller_name", "callback_number", "preferred_window")
-    if missing:
-        prompts = {
-            "caller_name": "Could I get your name?",
-            "callback_number": "What's the best phone number to call you back on?",
-            "preferred_window": "What day and time works best for you?",
-        }
-        ask = prompts[missing[0]]
-        CALL_STATE.force_speak = ask
-        logger.warning(f"Tool gating rejected: missing={missing}")
-        await params.result_callback({"ok": False, "error": f"Missing {missing}", "spoken_response": ask})
-        return
-
-    raw_number = args.get("callback_number", "")
-    digits = extract_phone_digits(raw_number)
-    if digits is None or len(digits) < 7:
-        msg = "I didn't catch your phone number clearly. Could you say it again, slowly?"
-        CALL_STATE.force_speak = msg
-        await params.result_callback({"ok": False, "error": "Bad phone", "spoken_response": msg})
-        return
-
-    rec = {"ts": datetime.datetime.now().isoformat(), **args, "callback_number": digits}
-    fn = _save_record("callback", rec)
-    CALL_STATE.booking_complete = True
-    logger.info(f"Booking callback queued -> {fn}")
-    await params.result_callback({
-        "ok": True,
-        "spoken_response": "Got it, your callback is saved.",
-    })
-
-
-async def take_message(params):
+# Single unified tool: save_request. The model picks `kind` ("appointment" or
+# "message") rather than choosing between two different tools — fewer choices
+# means less drift toward "talks instead of calling." Internally we still write
+# distinct callback_*.json / message_*.json files for downstream consumers.
+async def save_request(params):
     if _is_known_chitchat(CALL_STATE.last_user_text):
         msg = "Take care!" if _is_caller_declining(CALL_STATE.last_user_text) else "How can I help?"
         CALL_STATE.force_speak = msg
-        logger.warning(f"take_message blocked: chitchat ({CALL_STATE.last_user_text!r})")
+        logger.warning(f"save_request blocked: chitchat ({CALL_STATE.last_user_text!r})")
         await params.result_callback({"ok": False, "error": "Chitchat", "spoken_response": msg})
         return
 
     args = params.arguments or {}
+    kind = (args.get("kind") or "").strip().lower()
 
-    msgtxt = (args.get("message") or "").strip()
-    if msgtxt and _looks_like_assistant_question(msgtxt):
-        spoken = "What message should I pass along?"
+    if kind not in {"appointment", "message"}:
+        spoken = "Are you looking to book an appointment or leave a message?"
         CALL_STATE.force_speak = spoken
-        logger.warning(f"take_message blocked: self-question")
-        await params.result_callback({"ok": False, "error": "Self-question", "spoken_response": spoken})
+        logger.warning(f"save_request blocked: bad kind {kind!r}")
+        await params.result_callback({"ok": False, "error": "Bad kind", "spoken_response": spoken})
         return
 
     name = (args.get("caller_name") or "").strip()
@@ -593,32 +611,64 @@ async def take_message(params):
         await params.result_callback({"ok": False, "error": "Bad name", "spoken_response": spoken})
         return
 
-    missing = _missing(args, "caller_name", "callback_number", "message")
-    if missing:
+    if kind == "appointment":
+        if CALL_STATE.booking_complete:
+            spoken = "We've already got your callback scheduled. Anything else?"
+            CALL_STATE.force_speak = spoken
+            await params.result_callback({"ok": False, "error": "Already booked", "spoken_response": spoken})
+            return
+        required = ("caller_name", "callback_number", "preferred_window")
+        prompts = {
+            "caller_name": "Could I get your name?",
+            "callback_number": "What's the best phone number to call you back on?",
+            "preferred_window": "What day and time works best for you?",
+        }
+    else:  # message
+        msgtxt = (args.get("message") or "").strip()
+        if msgtxt and _looks_like_assistant_question(msgtxt):
+            spoken = "What message should I pass along?"
+            CALL_STATE.force_speak = spoken
+            await params.result_callback({"ok": False, "error": "Self-question", "spoken_response": spoken})
+            return
+        required = ("caller_name", "callback_number", "message")
         prompts = {
             "caller_name": "Could I get your name?",
             "callback_number": "What's the best callback number?",
             "message": "What message should I pass along?",
         }
+
+    missing = _missing(args, *required)
+    if missing:
         ask = prompts[missing[0]]
         CALL_STATE.force_speak = ask
+        logger.warning(f"save_request[{kind}] gating rejected: missing={missing}")
         await params.result_callback({"ok": False, "error": f"Missing {missing}", "spoken_response": ask})
         return
 
     digits = extract_phone_digits(args.get("callback_number", ""))
-    if digits is None:
-        msg = "I didn't catch your phone number clearly. Could you say it again, slowly?"
-        CALL_STATE.force_speak = msg
-        await params.result_callback({"ok": False, "error": "Bad phone", "spoken_response": msg})
+    if digits is None or len(digits) < 7:
+        spoken = "I didn't catch your phone number clearly. Could you say it again, slowly?"
+        CALL_STATE.force_speak = spoken
+        await params.result_callback({"ok": False, "error": "Bad phone", "spoken_response": spoken})
         return
+
     rec = {"ts": datetime.datetime.now().isoformat(), **args, "callback_number": digits}
-    fn = _save_record("message", rec)
-    CALL_STATE.message_complete = True
-    logger.info(f"Message saved -> {fn}")
-    await params.result_callback({
-        "ok": True,
-        "spoken_response": "Message saved.",
-    })
+    if kind == "appointment":
+        fn = _save_record("callback", rec)
+        CALL_STATE.booking_complete = True
+        logger.info(f"Booking callback queued -> {fn}")
+        await params.result_callback({
+            "ok": True,
+            "spoken_response": "Got it, your callback is saved.",
+        })
+    else:
+        fn = _save_record("message", rec)
+        CALL_STATE.message_complete = True
+        logger.info(f"Message saved -> {fn}")
+        await params.result_callback({
+            "ok": True,
+            "spoken_response": "Message saved.",
+        })
 
 
 async def escalate_emergency(params):
@@ -634,33 +684,32 @@ async def escalate_emergency(params):
 
 tools = ToolsSchema(standard_tools=[
     FunctionSchema(
-        name="book_appointment_callback",
+        name="save_request",
         description=(
-            "Save a callback request. ONLY call AFTER the caller has personally told you "
-            "their name, their phone number with digits, AND their preferred day/time "
-            "in this conversation. Do NOT call with placeholder values."
+            "Save the caller's request to be handled by office staff. Use kind='appointment' "
+            "for callback/booking requests (requires preferred_window). Use kind='message' for "
+            "messages to the doctor (requires message). ONLY call AFTER the caller has personally "
+            "given their name and phone number in this conversation. Never invent or guess values."
         ),
         properties={
+            "kind": {
+                "type": "string",
+                "enum": ["appointment", "message"],
+                "description": "appointment = callback request to book a visit; message = note for the doctor",
+            },
             "caller_name": {"type": "string"},
             "callback_number": {"type": "string"},
-            "preferred_window": {"type": "string"},
+            "preferred_window": {
+                "type": "string",
+                "description": "Required when kind='appointment'. The day and time the caller requested.",
+            },
+            "message": {
+                "type": "string",
+                "description": "Required when kind='message'. The actual content of the message.",
+            },
             "reason": {"type": "string"},
         },
-        required=["caller_name", "callback_number", "preferred_window"],
-    ),
-    FunctionSchema(
-        name="take_message",
-        description=(
-            "Save a message ONLY when caller has explicitly asked to leave a message "
-            "for the doctor. Do NOT call for greetings, declines, or off-topic chat. "
-            "Do NOT call with placeholder values."
-        ),
-        properties={
-            "caller_name": {"type": "string"},
-            "callback_number": {"type": "string"},
-            "message": {"type": "string"},
-        },
-        required=["caller_name", "callback_number", "message"],
+        required=["kind", "caller_name", "callback_number"],
     ),
     FunctionSchema(
         name="escalate_emergency",
@@ -683,20 +732,26 @@ Closing the call: end the call with EXACTLY ONE short goodbye sentence and nothi
 
 You do NOT have access to the office calendar or the schedule. You cannot see available slots, propose specific appointment times, or confirm a booking. Your job is to collect the caller's REQUESTED day and time as a callback request — a staff member will call them back to confirm actual availability. Never say things like "I have a slot at 2 PM" or "your appointment is booked."
 
-To take a callback request, gather these slots one at a time:
+You have ONE tool for non-emergency requests: save_request. Use it for both bookings and messages, distinguished by the `kind` parameter.
+
+For an APPOINTMENT (kind="appointment"), gather:
 1. Caller's name
 2. Their callback phone number (read it back digit-by-digit and ask "Is that right?")
-3. The day and time they would prefer
+3. preferred_window — the day and time they would prefer
 
-If you only hear a vague answer like "afternoon" or a single unclear word, ask them to be more specific (e.g. "What time in the afternoon works best?"). If a reply doesn't sound like a real time or day, ask them to repeat it — don't guess.
+For a MESSAGE (kind="message"), gather:
+1. Caller's name
+2. Their callback phone number
+3. message — the actual content of the message they want to leave
 
-Once you have name + phone + a specific preferred day/time, call book_appointment_callback with the real values the caller gave you.
+If you only hear a vague answer like "afternoon" or a single unclear word, ask them to be more specific. If a reply doesn't sound like a real time or day, ask them to repeat it — don't guess. NEVER invent a name (no "John Doe", no placeholders) — if the caller hasn't said their name, ASK.
+
+CRITICAL: as soon as you have all required slots for the chosen kind, the very next thing you produce MUST be the save_request tool call itself, before any spoken reply. Do not say "I'll save it" first. Do not summarize back. Do not ask "anything else?" first. Just call the tool. Once it returns ok:true, briefly confirm and then ask if there's anything else.
 
 When you invoke any tool, you MUST use the structured function-calling API. Never write a tool call as plain text, JSON, XML, or pseudo-code in your spoken reply (no `<tool_call>` tags, no `_icall_...`, no `{{"name": ..., "arguments": ...}}` text). The caller is on a phone — they would hear that as gibberish.
 
-After the booking tool returns ok:true, the request IS saved — confirm briefly and ask "Anything else I can help with?". Never apologize for a "glitch", never claim something went wrong, and never offer to redo the booking unless the caller explicitly says some specific detail (name/phone/time) is wrong.
+After save_request returns ok:true, the request IS saved — never apologize for a "glitch", never claim something went wrong, and never offer to redo the request unless the caller explicitly says some specific detail (name/phone/time) is wrong.
 
-If the caller wants to leave a message instead, gather name + callback number + message, then call take_message. NEVER invent a name (no "John Doe", no placeholders). If the caller has not said their name in this conversation, ASK for it before calling take_message. As soon as you have all three slots, call take_message immediately — do not announce that you're about to save it; just call the tool.
 If the caller describes severe pain, swelling, bleeding, or trauma, call escalate_emergency.
 
 Office info (share when asked):
@@ -735,8 +790,7 @@ async def main():
             temperature=0,
         ),
     )
-    llm.register_function("book_appointment_callback", book_appointment_callback)
-    llm.register_function("take_message", take_message)
+    llm.register_function("save_request", save_request)
     llm.register_function("escalate_emergency", escalate_emergency)
 
     tts = PiperTTSService(
@@ -778,6 +832,7 @@ async def main():
         TextNormalizer(),
         tts,
         AudioRateLogger(),
+        TurnLatencyTracker(),
         transport.output(),
         context_aggregator.assistant(),
     ])

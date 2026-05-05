@@ -8,11 +8,13 @@ too, not just the LLM.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass, field
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 
 MODEL = "qwen2.5:14b"
@@ -40,20 +42,26 @@ Closing the call: end the call with EXACTLY ONE short goodbye sentence and nothi
 
 You do NOT have access to the office calendar or the schedule. You cannot see available slots, propose specific appointment times, or confirm a booking. Your job is to collect the caller's REQUESTED day and time as a callback request — a staff member will call them back to confirm actual availability. Never say things like "I have a slot at 2 PM" or "your appointment is booked."
 
-To take a callback request, gather these slots one at a time:
+You have ONE tool for non-emergency requests: save_request. Use it for both bookings and messages, distinguished by the `kind` parameter.
+
+For an APPOINTMENT (kind="appointment"), gather:
 1. Caller's name
 2. Their callback phone number (read it back digit-by-digit and ask "Is that right?")
-3. The day and time they would prefer
+3. preferred_window — the day and time they would prefer
 
-If you only hear a vague answer like "afternoon" or a single unclear word, ask them to be more specific (e.g. "What time in the afternoon works best?"). If a reply doesn't sound like a real time or day, ask them to repeat it — don't guess.
+For a MESSAGE (kind="message"), gather:
+1. Caller's name
+2. Their callback phone number
+3. message — the actual content of the message they want to leave
 
-Once you have name + phone + a specific preferred day/time, call book_appointment_callback with the real values the caller gave you.
+If you only hear a vague answer like "afternoon" or a single unclear word, ask them to be more specific. If a reply doesn't sound like a real time or day, ask them to repeat it — don't guess. NEVER invent a name (no "John Doe", no placeholders) — if the caller hasn't said their name, ASK.
+
+CRITICAL: as soon as you have all required slots for the chosen kind, the very next thing you produce MUST be the save_request tool call itself, before any spoken reply. Do not say "I'll save it" first. Do not summarize back. Do not ask "anything else?" first. Just call the tool. Once it returns ok:true, briefly confirm and then ask if there's anything else.
 
 When you invoke any tool, you MUST use the structured function-calling API. Never write a tool call as plain text, JSON, XML, or pseudo-code in your spoken reply (no `<tool_call>` tags, no `_icall_...`, no `{{"name": ..., "arguments": ...}}` text). The caller is on a phone — they would hear that as gibberish.
 
-After the booking tool returns ok:true, the request IS saved — confirm briefly and ask "Anything else I can help with?". Never apologize for a "glitch", never claim something went wrong, and never offer to redo the booking unless the caller explicitly says some specific detail (name/phone/time) is wrong.
+After save_request returns ok:true, the request IS saved — never apologize for a "glitch", never claim something went wrong, and never offer to redo the request unless the caller explicitly says some specific detail (name/phone/time) is wrong.
 
-If the caller wants to leave a message instead, gather name + callback number + message, then call take_message. NEVER invent a name (no "John Doe", no placeholders). If the caller has not said their name in this conversation, ASK for it before calling take_message. As soon as you have all three slots, call take_message immediately — do not announce that you're about to save it; just call the tool.
 If the caller describes severe pain, swelling, bleeding, or trauma, call escalate_emergency.
 
 Office info (share when asked):
@@ -73,41 +81,35 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "book_appointment_callback",
+            "name": "save_request",
             "description": (
-                "Save a callback request. ONLY call AFTER the caller has personally told you "
-                "their name, their phone number with digits, AND their preferred day/time "
-                "in this conversation. Do NOT call with placeholder values."
+                "Save the caller's request to be handled by office staff. Use kind='appointment' "
+                "for callback/booking requests (requires preferred_window). Use kind='message' for "
+                "messages to the doctor (requires message). ONLY call AFTER the caller has "
+                "personally given their name and phone number in this conversation. Never invent "
+                "or guess values."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["appointment", "message"],
+                        "description": "appointment = callback request to book a visit; message = note for the doctor",
+                    },
                     "caller_name": {"type": "string"},
                     "callback_number": {"type": "string"},
-                    "preferred_window": {"type": "string"},
+                    "preferred_window": {
+                        "type": "string",
+                        "description": "Required when kind='appointment'.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Required when kind='message'.",
+                    },
                     "reason": {"type": "string"},
                 },
-                "required": ["caller_name", "callback_number", "preferred_window"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "take_message",
-            "description": (
-                "Save a message ONLY when caller has explicitly asked to leave a message "
-                "for the doctor. Do NOT call for greetings, declines, or off-topic chat. "
-                "Do NOT call with placeholder values."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "caller_name": {"type": "string"},
-                    "callback_number": {"type": "string"},
-                    "message": {"type": "string"},
-                },
-                "required": ["caller_name", "callback_number", "message"],
+                "required": ["kind", "caller_name", "callback_number"],
             },
         },
     },
@@ -211,23 +213,22 @@ def execute_tool(name: str, args: dict) -> dict:
     """Mirrors bot.py's tool gating, returns the same shape of response, but
     skips writing JSON files. Returns the dict the LLM will see as tool_result."""
 
-    if name == "book_appointment_callback":
-        missing = _missing(args, "caller_name", "callback_number", "preferred_window")
+    if name == "save_request":
+        kind = (args.get("kind") or "").strip().lower()
+        if kind == "appointment":
+            missing = _missing(args, "caller_name", "callback_number", "preferred_window")
+            ok_msg = "Got it, your callback is saved."
+        elif kind == "message":
+            missing = _missing(args, "caller_name", "callback_number", "message")
+            ok_msg = "Message saved."
+        else:
+            return {"ok": False, "error": "Bad kind"}
         if missing:
             return {"ok": False, "error": f"Missing {missing}"}
         digits = _extract_phone_digits(args.get("callback_number", ""))
         if digits is None or len(digits) < 7:
             return {"ok": False, "error": "Bad phone"}
-        return {"ok": True, "spoken_response": "Got it, your callback is saved."}
-
-    if name == "take_message":
-        missing = _missing(args, "caller_name", "callback_number", "message")
-        if missing:
-            return {"ok": False, "error": f"Missing {missing}"}
-        digits = _extract_phone_digits(args.get("callback_number", ""))
-        if digits is None:
-            return {"ok": False, "error": "Bad phone"}
-        return {"ok": True, "spoken_response": "Message saved."}
+        return {"ok": True, "kind": kind, "spoken_response": ok_msg}
 
     if name == "escalate_emergency":
         return {
@@ -289,6 +290,136 @@ class CaseResult:
     turns: list[Turn]
     tool_calls: list[ToolCallRecord]
     transcript: list[dict]  # raw OpenAI-format messages for debugging
+    llm_call_ms: list[int] = field(default_factory=list)  # per-LLM-request wall time
+
+
+async def run_case_async(
+    case_id: str,
+    user_turns: list[str],
+    max_tool_loops: int = 5,
+    client: AsyncOpenAI | None = None,
+) -> CaseResult:
+    """Async version of run_case for concurrent execution. Records per-LLM-call
+    wall time so we can measure how latency degrades under load."""
+    own_client = False
+    if client is None:
+        client = AsyncOpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+        own_client = True
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "assistant", "content": GREETING},
+    ]
+    captured_turns = [Turn(role="assistant", text=GREETING)]
+    captured_tool_calls: list[ToolCallRecord] = []
+    llm_call_ms: list[int] = []
+    farewell_spoken = False
+
+    for user_text in user_turns:
+        messages.append({"role": "user", "content": user_text})
+        captured_turns.append(Turn(role="user", text=user_text))
+
+        for _ in range(max_tool_loops):
+            t0 = time.monotonic()
+            resp = await client.chat.completions.create(
+                model=MODEL,
+                messages=messages,
+                tools=TOOLS,
+                temperature=0,
+            )
+            llm_call_ms.append(int((time.monotonic() - t0) * 1000))
+            msg = resp.choices[0].message
+
+            assistant_msg: dict = {"role": "assistant"}
+            if msg.content:
+                assistant_msg["content"] = msg.content
+            if msg.tool_calls:
+                assistant_msg["tool_calls"] = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments,
+                        },
+                    }
+                    for tc in msg.tool_calls
+                ]
+            messages.append(assistant_msg)
+
+            spoken_text = msg.content or ""
+            if spoken_text:
+                spoken_text = _strip_malformed_tool_call(spoken_text)
+                if farewell_spoken and spoken_text:
+                    spoken_text = ""
+                elif spoken_text and _FAREWELL_RE.search(spoken_text):
+                    farewell_spoken = True
+
+            captured_turns.append(
+                Turn(
+                    role="assistant",
+                    text=spoken_text,
+                    tool_calls=[
+                        {"name": tc.function.name, "arguments": tc.function.arguments}
+                        for tc in (msg.tool_calls or [])
+                    ],
+                )
+            )
+
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = execute_tool(tc.function.name, args)
+                    captured_tool_calls.append(
+                        ToolCallRecord(name=tc.function.name, args=args, result=result)
+                    )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(result),
+                    })
+                continue
+            break
+
+    if own_client:
+        await client.close()
+
+    return CaseResult(
+        case_id=case_id,
+        turns=captured_turns,
+        tool_calls=captured_tool_calls,
+        transcript=messages,
+        llm_call_ms=llm_call_ms,
+    )
+
+
+async def run_cases_concurrent(
+    cases: list[dict],
+    concurrency: int = 1,
+) -> list[CaseResult]:
+    """Run a list of cases with up to `concurrency` running at any moment.
+
+    Reuses one AsyncOpenAI client across all tasks (Ollama handles concurrent
+    requests serverside; the client is connection-pooled). Returns results in
+    the same order as the input cases."""
+    client = AsyncOpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+    sem = asyncio.Semaphore(concurrency)
+    results: list[CaseResult | None] = [None] * len(cases)
+
+    async def _run(i: int, case: dict):
+        async with sem:
+            print(f"  starting {case['id']}", flush=True)
+            results[i] = await run_case_async(
+                case["id"], case["user_turns"], client=client
+            )
+            print(f"  done {case['id']}", flush=True)
+
+    await asyncio.gather(*[_run(i, c) for i, c in enumerate(cases)])
+    await client.close()
+    return [r for r in results if r is not None]
 
 
 def run_case(case_id: str, user_turns: list[str], max_tool_loops: int = 5) -> CaseResult:
@@ -308,6 +439,7 @@ def run_case(case_id: str, user_turns: list[str], max_tool_loops: int = 5) -> Ca
 
     captured_turns = [Turn(role="assistant", text=GREETING)]
     captured_tool_calls: list[ToolCallRecord] = []
+    llm_call_ms: list[int] = []
     farewell_spoken = False  # latches once per call (mirrors prod FarewellDeduper)
 
     for user_text in user_turns:
@@ -315,12 +447,14 @@ def run_case(case_id: str, user_turns: list[str], max_tool_loops: int = 5) -> Ca
         captured_turns.append(Turn(role="user", text=user_text))
 
         for _ in range(max_tool_loops):
+            t0 = time.monotonic()
             resp = client.chat.completions.create(
                 model=MODEL,
                 messages=messages,
                 tools=TOOLS,
                 temperature=0,
             )
+            llm_call_ms.append(int((time.monotonic() - t0) * 1000))
             msg = resp.choices[0].message
 
             # Record assistant message in OpenAI format for the next round.
@@ -388,4 +522,5 @@ def run_case(case_id: str, user_turns: list[str], max_tool_loops: int = 5) -> Ca
         turns=captured_turns,
         tool_calls=captured_tool_calls,
         transcript=messages,
+        llm_call_ms=llm_call_ms,
     )

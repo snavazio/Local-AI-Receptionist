@@ -170,3 +170,6 @@ call_logs/
 # Eval artifacts
 eval/run.log
 eval/report.md
+eval/report_*.md
+eval/run_*.log
+eval/report_shard*.md
