@@ -23,7 +23,7 @@ Every successful call leaves three artifacts: a `callback_*.json` (or `message_*
 
 ## Stack
 
-All local, all runs on a 24 GB GPU:
+All local, runs on a 24 GB GPU today; future testing will target a 16 GB GPU.
 
 | Layer     | Component                                            |
 | --------- | ---------------------------------------------------- |
