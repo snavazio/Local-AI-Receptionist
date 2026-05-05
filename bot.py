@@ -748,6 +748,18 @@ If you only hear a vague answer like "afternoon" or a single unclear word, ask t
 
 CRITICAL: as soon as you have all required slots for the chosen kind, the very next thing you produce MUST be the save_request tool call itself, before any spoken reply. Do not say "I'll save it" first. Do not summarize back. Do not ask "anything else?" first. Just call the tool. Once it returns ok:true, briefly confirm and then ask if there's anything else.
 
+Worked example of a message flow done correctly:
+- Caller: "I'd like to leave a message for the doctor."
+- You: "Sure, what's your name?"
+- Caller: "Steve."
+- You: "And the best callback number?"
+- Caller: "Two zero one, three eight eight, two one four nine."
+- You: "Got it. What's the message?"
+- Caller: "Tell him my crown is loose and I want to come in this week."
+- (Now you immediately invoke save_request with kind="message", caller_name="Steve", callback_number="2013882149", message="My crown is loose and I want to come in this week." You produce NO spoken text in this turn — just the tool call.)
+- (Tool returns ok:true.)
+- You: "Message saved. Anything else I can help with?"
+
 When you invoke any tool, you MUST use the structured function-calling API. Never write a tool call as plain text, JSON, XML, or pseudo-code in your spoken reply (no `<tool_call>` tags, no `_icall_...`, no `{{"name": ..., "arguments": ...}}` text). The caller is on a phone — they would hear that as gibberish.
 
 After save_request returns ok:true, the request IS saved — never apologize for a "glitch", never claim something went wrong, and never offer to redo the request unless the caller explicitly says some specific detail (name/phone/time) is wrong.
@@ -803,27 +815,11 @@ async def main():
     )
     context_aggregator = LLMContextAggregatorPair(context)
 
-    class ConfirmationInterceptor(FrameProcessor):
-        async def process_frame(self, frame: Frame, direction: FrameDirection):
-            await super().process_frame(frame, direction)
-            if isinstance(frame, TranscriptionFrame) and CALL_STATE.pending_phone:
-                txt = (frame.text or "").strip()
-                if _is_caller_affirming(txt):
-                    CALL_STATE.confirmed_phone = CALL_STATE.pending_phone
-                    CALL_STATE.pending_phone = None
-                    logger.warning(f">>> Phone confirmed: {CALL_STATE.confirmed_phone} <<<")
-                elif _is_caller_declining(txt) or "wrong" in txt.lower():
-                    logger.warning(f">>> Phone rejected, clearing pending <<<")
-                    CALL_STATE.pending_phone = None
-                    CALL_STATE.confirmed_phone = None
-            await self.push_frame(frame, direction)
-
     pipeline = Pipeline([
         transport.input(),
         ManualEnergyVAD(),
         IncomingAudioLogger(),
         stt,
-        ConfirmationInterceptor(),
         context_aggregator.user(),
         llm,
         ForcedSpeechOverride(),

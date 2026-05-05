@@ -40,6 +40,51 @@ All local, runs on a 24 GB GPU today; future testing will target a 16 GB GPU.
 - Cross-continent test client over Tailscale (~190 ms RTT) — works fine
 - Models tried before settling on Qwen 2.5 14B: Llama 3.1 / 3.2 (too tool-trigger-happy, calls tools with placeholder args), Hermes 3 8B (great prose, refused to call tools under negative-gating prompts)
 
+## Capacity & latency
+
+Measured via the eval harness (`eval/run_eval.py`) on the hardware above:
+
+| Concurrent inference slots | LLM-call p50 | LLM-call p95 | Throughput |
+| --- | --- | --- | --- |
+| 1 | 663 ms | 2.7 s | 0.94 calls/s |
+| 2 | 1.6 s | 3.4 s | 1.07 calls/s |
+| 4 | 2.9 s | 5.3 s | 1.14 calls/s |
+| 8 | 5.8 s | 11.6 s | 1.15 calls/s |
+
+Throughput plateaus around concurrency 2 — the GPU is compute-bound, not request-bound. Per-call latency scales roughly linearly with concurrency.
+
+A real caller's turn includes ~600 ms of VAD silence wait, ~150 ms Whisper, and ~80 ms Piper on top of the LLM call, so add ~800 ms to each row to get end-to-end turn latency.
+
+A caller is bursty — they only need the GPU during their *own* turn. Practical capacity on this hardware:
+
+- **~2 inference slots ≈ 4-6 simultaneous callers** (comfortable latency)
+- **~4 slots ≈ 8-10 callers** (workable but slower)
+- **More than ~10 callers** in flight will exceed acceptable phone latency.
+
+If you need more capacity, swap to Qwen 2.5 7B (~5 GB VRAM) for ~2x the parallel slots in the same VRAM budget — at the cost of ~10-15 percentage points on the eval pass rate.
+
+## Eval / regression suite
+
+`eval/` is a text-only harness that drives Qwen via Ollama's OpenAI-compat endpoint and asserts on per-case behavior across 100 scripted scenarios in 10 categories (happy_path, slot_order, vague_response, correction, cancel, message, emergency, adversarial, phone_variant, office_qa). It mirrors the production-side post-processors (`MalformedToolCallStripper`, `FarewellDeduper`) so assertions reflect what a caller actually hears.
+
+```bash
+# 100 cases at concurrency 4 (~7 min on the hardware above)
+python eval/run_eval.py --concurrency 4
+
+# One category, single-threaded
+python eval/run_eval.py --category emergency
+
+# Try a different local model
+python eval/run_eval.py --concurrency 4 --model qwen2.5:7b
+```
+
+Current baseline: **80/100** on Qwen 2.5 14B Q4. The remaining gap is concentrated in the message-taking flow (~6/10 fail) where the LLM gathers slots correctly but drifts away from invoking the tool — this is what `bot_flows.py` exists to fix.
+
+## Two bot variants
+
+- **`bot.py`** — the live, free-form-LLM-with-tool-calling implementation. What the README setup steps run.
+- **`bot_flows.py`** — same audio pipeline, but conversation is driven by [pipecat-ai-flows](https://github.com/pipecat-ai/pipecat-flows) as an explicit FSM (`triage → collect_name → collect_phone → collect_window | collect_message → save → confirm/end`). The function call *is* the state transition, so the model can't "talk without acting." Use this when message-flow reliability matters more than conversational latitude. Same Ollama / Whisper / Piper stack — just a different driver.
+
 ## Setup
 
 ### 1. Clone and install dependencies

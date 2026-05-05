@@ -208,6 +208,10 @@ def main() -> int:
         help="Internal flag: write per-row JSON dump instead of markdown report.",
     )
     parser.add_argument(
+        "--model",
+        help="Override the LLM model name (sets EVAL_MODEL env var). Default qwen2.5:14b.",
+    )
+    parser.add_argument(
         "--cases-file",
         default=str(Path(__file__).parent / "cases.yaml"),
     )
@@ -216,6 +220,11 @@ def main() -> int:
         default=str(Path(__file__).parent / "report.md"),
     )
     args = parser.parse_args()
+
+    # Propagate --model to harness via env var (subprocesses inherit).
+    if args.model:
+        import os as _os
+        _os.environ["EVAL_MODEL"] = args.model
 
     cases = yaml.safe_load(Path(args.cases_file).read_text())
     if args.case:

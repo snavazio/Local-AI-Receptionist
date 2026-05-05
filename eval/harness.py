@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from openai import AsyncOpenAI, OpenAI
 
 
-MODEL = "qwen2.5:14b"
+import os as _os
+MODEL = _os.environ.get("EVAL_MODEL", "qwen2.5:14b")
 OLLAMA_BASE_URL = "http://localhost:11434/v1"
 
 PRACTICE = {
@@ -57,6 +58,18 @@ For a MESSAGE (kind="message"), gather:
 If you only hear a vague answer like "afternoon" or a single unclear word, ask them to be more specific. If a reply doesn't sound like a real time or day, ask them to repeat it — don't guess. NEVER invent a name (no "John Doe", no placeholders) — if the caller hasn't said their name, ASK.
 
 CRITICAL: as soon as you have all required slots for the chosen kind, the very next thing you produce MUST be the save_request tool call itself, before any spoken reply. Do not say "I'll save it" first. Do not summarize back. Do not ask "anything else?" first. Just call the tool. Once it returns ok:true, briefly confirm and then ask if there's anything else.
+
+Worked example of a message flow done correctly:
+- Caller: "I'd like to leave a message for the doctor."
+- You: "Sure, what's your name?"
+- Caller: "Steve."
+- You: "And the best callback number?"
+- Caller: "Two zero one, three eight eight, two one four nine."
+- You: "Got it. What's the message?"
+- Caller: "Tell him my crown is loose and I want to come in this week."
+- (Now you immediately invoke save_request with kind="message", caller_name="Steve", callback_number="2013882149", message="My crown is loose and I want to come in this week." You produce NO spoken text in this turn — just the tool call.)
+- (Tool returns ok:true.)
+- You: "Message saved. Anything else I can help with?"
 
 When you invoke any tool, you MUST use the structured function-calling API. Never write a tool call as plain text, JSON, XML, or pseudo-code in your spoken reply (no `<tool_call>` tags, no `_icall_...`, no `{{"name": ..., "arguments": ...}}` text). The caller is on a phone — they would hear that as gibberish.
 
