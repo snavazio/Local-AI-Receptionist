@@ -29,6 +29,10 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.services.ollama.llm import OLLamaLLMService
 from pipecat.services.whisper.stt import WhisperSTTService
 from pipecat.services.piper.tts import PiperTTSService
+from pipecat.services.settings import assert_given
+from pipecat.frames.frames import ErrorFrame
+from pipecat.utils.time import time_now_iso8601
+import asyncio
 
 from pipecat.transports.websocket.server import (
     WebsocketServerParams, WebsocketServerTransport,
@@ -36,6 +40,55 @@ from pipecat.transports.websocket.server import (
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 
 load_dotenv(override=True)
+
+
+WHISPER_BIAS_PROMPT = (
+    "Phone call to a dental office. The caller may say short replies like "
+    "yes, no, two, four, eight, ten, AM, PM, Monday, Tuesday, Wednesday, "
+    "Thursday, Friday. Phone numbers are spoken as digits."
+)
+
+
+class BiasedWhisperSTT(WhisperSTTService):
+    """Whisper service that passes an initial_prompt to bias decoding toward
+    digits, times, and short affirmatives — reduces single-syllable hallucinations
+    like '2' -> 'True.'"""
+
+    async def run_stt(self, audio):
+        if not self._model:
+            yield ErrorFrame("Whisper model not available")
+            return
+
+        await self.start_processing_metrics()
+
+        audio_float = np.frombuffer(audio, dtype=np.int16).astype(np.float32) / 32768.0
+
+        language = assert_given(self._settings.language)
+        segments, _ = await asyncio.to_thread(
+            self._model.transcribe,
+            audio_float,
+            language=language,
+            initial_prompt=WHISPER_BIAS_PROMPT,
+            vad_filter=True,
+        )
+
+        text = ""
+        no_speech_prob_threshold = assert_given(self._settings.no_speech_prob)
+        for segment in segments:
+            if (
+                no_speech_prob_threshold is not None
+                and segment.no_speech_prob < no_speech_prob_threshold
+            ):
+                text += f"{segment.text} "
+
+        await self.stop_processing_metrics()
+
+        if text:
+            await self._handle_transcription(text, True, language)
+            logger.debug(f"Transcription: [{text}]")
+            yield TranscriptionFrame(
+                text, self._user_id, time_now_iso8601(), language
+            )
 
 PRACTICE = {
     "name": "Smith Family Dental",
@@ -109,7 +162,7 @@ def extract_phone_digits(text: str) -> str | None:
 class ManualEnergyVAD(FrameProcessor):
     RMS_THRESHOLD = 800.0
     START_FRAMES = 5
-    STOP_FRAMES = 55
+    STOP_FRAMES = 25
 
     def __init__(self):
         super().__init__()
@@ -171,24 +224,72 @@ class IncomingAudioLogger(FrameProcessor):
 
 
 class ForcedSpeechOverride(FrameProcessor):
+    """When CALL_STATE.force_speak is set, emit it once via TTSSpeakFrame and
+    suppress every assistant text frame until the user speaks again.
+
+    Without the suppression-window, the LLM's multi-sentence stream after a
+    failed tool call leaks through and Piper speaks the same confirmation
+    several times back-to-back."""
+
     def __init__(self):
         super().__init__()
-        self._spoken = False
+        self._suppressing = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if CALL_STATE.force_speak and not self._spoken:
+        # User starting a new turn → reopen the gate.
+        if isinstance(frame, (UserStartedSpeakingFrame, VADUserStartedSpeakingFrame)):
+            self._suppressing = False
+
+        if CALL_STATE.force_speak and not self._suppressing:
+            forced = CALL_STATE.force_speak
+            logger.warning(f">>> FORCING SPEECH: {forced!r} <<<")
+            await self.push_frame(TTSSpeakFrame(text=forced), direction)
+            self._suppressing = True
+            CALL_STATE.force_speak = None
+            # Drop the current frame too if it carries assistant text.
             if hasattr(frame, "text") and isinstance(getattr(frame, "text", None), str):
-                forced = CALL_STATE.force_speak
-                logger.warning(f">>> FORCING SPEECH: {forced!r} <<<")
-                await self.push_frame(TTSSpeakFrame(text=forced), direction)
-                self._spoken = True
-                CALL_STATE.force_speak = None
                 return
 
-        if self._spoken and not CALL_STATE.force_speak:
-            self._spoken = False
+        # While suppressing, swallow any further assistant text frames.
+        if self._suppressing and hasattr(frame, "text") and isinstance(getattr(frame, "text", None), str):
+            return
+
+        await self.push_frame(frame, direction)
+
+
+class FarewellDeduper(FrameProcessor):
+    """Suppress every farewell-shaped sentence after the first in an assistant turn.
+
+    Without this the model strings together "Thanks for calling X. Have a great day.
+    Take care!" — three goodbyes in one turn. We let the first farewell phrase
+    through and drop subsequent ones until the caller speaks again."""
+
+    FAREWELL_PATTERNS = re.compile(
+        r"\b(take care|have a (great|good|nice|wonderful|lovely) day"
+        r"|good ?bye|bye now|see you|we look forward|talk to you (soon|later))\b",
+        re.IGNORECASE,
+    )
+
+    def __init__(self):
+        super().__init__()
+        self._farewell_spoken = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        # Once a farewell has been said, drop ALL subsequent assistant text for
+        # the rest of the call. Don't reset on user turns — the caller saying
+        # "goodbye" back shouldn't reopen the gate and trigger another farewell.
+
+        txt = getattr(frame, "text", None) if hasattr(frame, "text") else None
+        if isinstance(txt, str) and txt.strip():
+            if self._farewell_spoken:
+                logger.warning(f">>> Post-farewell silence — dropping: {txt!r} <<<")
+                return
+            if self.FAREWELL_PATTERNS.search(txt):
+                self._farewell_spoken = True
 
         await self.push_frame(frame, direction)
 
@@ -371,22 +472,13 @@ async def book_appointment_callback(params):
         await params.result_callback({"ok": False, "error": "Bad phone", "spoken_response": msg})
         return
 
-    if CALL_STATE.confirmed_phone != digits:
-        CALL_STATE.pending_phone = digits
-        spoken_back = speak_digits(digits)
-        msg = f"Just to confirm, your number is {spoken_back}. Is that right?"
-        CALL_STATE.force_speak = msg
-        logger.warning(f"Phone needs confirmation: {digits}")
-        await params.result_callback({"ok": False, "error": "Confirm phone", "spoken_response": msg})
-        return
-
     rec = {"ts": datetime.datetime.now().isoformat(), **args, "callback_number": digits}
     fn = _save_record("callback", rec)
     CALL_STATE.booking_complete = True
     logger.info(f"Booking callback queued -> {fn}")
     await params.result_callback({
         "ok": True,
-        "spoken_response": "Got it. Someone from the office will call you back shortly to confirm the time. Anything else I can help with?",
+        "spoken_response": "Got it, your callback is saved.",
     })
 
 
@@ -433,21 +525,13 @@ async def take_message(params):
         CALL_STATE.force_speak = msg
         await params.result_callback({"ok": False, "error": "Bad phone", "spoken_response": msg})
         return
-    if CALL_STATE.confirmed_phone != digits:
-        CALL_STATE.pending_phone = digits
-        spoken_back = speak_digits(digits)
-        msg = f"Just to confirm, your number is {spoken_back}. Is that right?"
-        CALL_STATE.force_speak = msg
-        await params.result_callback({"ok": False, "error": "Confirm phone", "spoken_response": msg})
-        return
-
     rec = {"ts": datetime.datetime.now().isoformat(), **args, "callback_number": digits}
     fn = _save_record("message", rec)
     CALL_STATE.message_complete = True
     logger.info(f"Message saved -> {fn}")
     await params.result_callback({
         "ok": True,
-        "spoken_response": "Message saved. The office will reach out soon. Anything else?",
+        "spoken_response": "Message saved.",
     })
 
 
@@ -501,36 +585,38 @@ tools = ToolsSchema(standard_tools=[
 ])
 
 
-SYSTEM_PROMPT = f"""You are Sarah, the receptionist at {PRACTICE['name']}, answering for {PRACTICE['doctor']}.
+SYSTEM_PROMPT = f"""You are Sarah, the AI assistant for {PRACTICE['name']} (answering for {PRACTICE['doctor']}).
 
-JOB: Take phone calls. Most turns are conversational. When the caller wants to book an appointment or leave a message, you MUST use the appropriate function/tool to actually save their information. Saying "I have saved it" without calling the tool is a FAILURE.
+On the first turn, greet the caller with EXACTLY this sentence and nothing else: "Thanks for calling Smith Family Dental. This is Sarah, the AI assistant. How can I help you today?" If a caller asks whether you are a person or a bot, answer honestly that you are an AI assistant.
 
-VOICE FORMAT:
-- Phone call. Spoken aloud. 1-2 short sentences per turn. No markdown, no quotes.
-- Speak numbers naturally.
+Speak in 1-2 short sentences per turn. This is a phone call — no markdown, no quotes, speak numbers naturally.
 
-ABSOLUTE RULES:
-- For appointment bookings: you MUST call book_appointment_callback once you have caller name + phone number + preferred day/time. Generating natural language confirmation alone is a FAILURE — the tool MUST be called.
-- DO NOT call functions until you actually have all the required information from the caller in this conversation.
-- DO NOT use placeholder values like "unknown", "<unknown>", "[name]", "null". If missing info, ASK — don't call the tool with placeholders.
-- DO NOT proactively ask about emergencies — wait for caller to describe symptoms.
-- DO NOT make up office facts. Use only the KNOWN INFO below.
-- DO NOT apologize for mistakes. Just ask the next question.
-- DO NOT preface responses with "Understood" or "Sure" — get to the point.
+Phone numbers MUST be spelled out as words, never as digits with dashes. Correct: "two zero one, three eight eight, two one four nine". Wrong: "201-388-2149" or "2013882149". Apply this rule whenever you read a phone number aloud.
 
-APPOINTMENT FLOW (collect, confirm, then book):
-1. Caller wants appointment → ask their name.
-2. Got name → ask callback phone number.
-3. Got number → repeat back digits, ask "Is that right?"
-4. Confirmed → ask preferred day and time.
-5. Have name + phone + day/time → CALL book_appointment_callback function. This step is mandatory.
+Closing the call: end the call with EXACTLY ONE short goodbye sentence and nothing else. Pick one of: "Take care!" / "Have a great day!" / "Goodbye!" Never combine two farewells. Specifically: never say "Thanks for calling..." and "Take care" in the same turn — pick one. After a booking succeeds, do not preemptively say goodbye; ask "Anything else I can help with?" and wait.
 
-KNOWN INFO (only when asked):
+You do NOT have access to the office calendar or the schedule. You cannot see available slots, propose specific appointment times, or confirm a booking. Your job is to collect the caller's REQUESTED day and time as a callback request — a staff member will call them back to confirm actual availability. Never say things like "I have a slot at 2 PM" or "your appointment is booked."
+
+To take a callback request, gather these slots one at a time:
+1. Caller's name
+2. Their callback phone number (read it back digit-by-digit and ask "Is that right?")
+3. The day and time they would prefer
+
+If you only hear a vague answer like "afternoon" or a single unclear word, ask them to be more specific (e.g. "What time in the afternoon works best?"). If a reply doesn't sound like a real time or day, ask them to repeat it — don't guess.
+
+Once you have name + phone + a specific preferred day/time, call book_appointment_callback with the real values the caller gave you.
+
+After the booking tool returns ok:true, the request IS saved — confirm briefly and ask "Anything else I can help with?". Never apologize for a "glitch", never claim something went wrong, and never offer to redo the booking unless the caller explicitly says some specific detail (name/phone/time) is wrong.
+
+If the caller wants to leave a message instead, gather name + callback number + message, then call take_message.
+If the caller describes severe pain, swelling, bleeding, or trauma, call escalate_emergency.
+
+Office info (share when asked):
 - Hours: {PRACTICE['hours']}
 - Address: {PRACTICE['address']}
 - Emergency line: {PRACTICE['emergency_line']}
 
-If asked for human: "I'm an automated assistant, but I can take your information and have someone call you right back."
+If asked to speak to a human: "I'm an automated assistant, but I can take your information and have someone call you right back."
 """
 
 
@@ -549,7 +635,7 @@ async def main():
         ),
     )
 
-    stt = WhisperSTTService(
+    stt = BiasedWhisperSTT(
         settings=WhisperSTTService.Settings(model="distil-large-v3"),
         device="cuda",
         compute_type="float16",
@@ -557,7 +643,7 @@ async def main():
 
     llm = OLLamaLLMService(
         settings=OLLamaLLMService.Settings(
-            model="receptionist-hermes",
+            model="qwen2.5:14b",
             temperature=0.1,
         ),
     )
@@ -599,6 +685,7 @@ async def main():
         context_aggregator.user(),
         llm,
         ForcedSpeechOverride(),
+        farewell_deduper := FarewellDeduper(),
         TextNormalizer(),
         tts,
         AudioRateLogger(),
@@ -615,6 +702,11 @@ async def main():
         ),
     )
 
+    GREETING = (
+        "Thanks for calling Smith Family Dental. "
+        "This is Sarah, the AI assistant. How can I help you today?"
+    )
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info("Client connected - greeting caller")
@@ -624,9 +716,13 @@ async def main():
         CALL_STATE.pending_phone = None
         CALL_STATE.confirmed_phone = None
         CALL_STATE.force_speak = None
-        context.set_messages([{"role": "system", "content": SYSTEM_PROMPT}])
-        context.add_message({"role": "system", "content": "Greet the caller now."})
-        await task.queue_frames([LLMContextFrame(context)])
+        farewell_deduper._farewell_spoken = False
+        # Hardcode the greeting — bypass the LLM so it can't drop a word ("Sarah, the AI.").
+        context.set_messages([
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "assistant", "content": GREETING},
+        ])
+        await task.queue_frames([TTSSpeakFrame(text=GREETING)])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):

@@ -162,3 +162,7 @@ runpod.toml
 
 # Examples
 templates/streams.xml
+# Project-specific
+call_logs/
+*.onnx
+*.onnx.json
