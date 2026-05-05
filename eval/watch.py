@@ -258,6 +258,19 @@ def main() -> int:
 
     append_history(curr)
 
+    # Slack/email-friendly one-liner — easy to grep for in cron output.
+    delta = ""
+    if prev is not None:
+        d = curr["passed"] - prev["passed"]
+        sign = "+" if d >= 0 else ""
+        delta = f", {sign}{d}"
+    print(
+        f"\nSUMMARY: {curr['passed']}/{curr['total']} passed{delta} | "
+        f"p50={curr['latency']['p50']}ms p95={curr['latency']['p95']}ms | "
+        f"regressions={'yes' if has_regression else 'no'}",
+        flush=True,
+    )
+
     if args.update_baseline or (prev is None) or (not args.no_update and not has_regression):
         BASELINE.write_text(json.dumps(curr, indent=2))
         print(f"\n[watch] baseline updated -> {BASELINE}")

@@ -109,8 +109,6 @@ class CallState:
         self.booking_complete = False
         self.message_complete = False
         self.last_user_text = ""
-        self.pending_phone = None
-        self.confirmed_phone = None
         self.force_speak = None
 
 CALL_STATE = CallState()
@@ -853,8 +851,6 @@ async def main():
         CALL_STATE.booking_complete = False
         CALL_STATE.message_complete = False
         CALL_STATE.last_user_text = ""
-        CALL_STATE.pending_phone = None
-        CALL_STATE.confirmed_phone = None
         CALL_STATE.force_speak = None
         farewell_deduper._farewell_spoken = False
         # Hardcode the greeting — bypass the LLM so it can't drop a word ("Sarah, the AI.").
