@@ -59,6 +59,7 @@ from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.services.ollama.llm import OLLamaLLMService
 from pipecat.services.piper.tts import PiperTTSService
+from pipecat.transcriptions.language import Language
 from pipecat.transports.websocket.server import (
     WebsocketServerParams,
     WebsocketServerTransport,
@@ -210,6 +211,10 @@ async def run_bot() -> None:
         compute_type=WHISPER_COMPUTE_TYPE,
         settings=BiasedWhisperSTT.Settings(
             model=WHISPER_MODEL,
+            language=Language.EN,
+            # Filter out segments where the model is more than 40% confident
+            # there is no speech — reduces hallucinations on short utterances.
+            no_speech_prob=0.4,
         ),
     )
 

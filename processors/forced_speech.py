@@ -24,6 +24,10 @@ This processor sits **between the LLM and TTS** and:
 If no forced-speech text is pending the response flows through unchanged.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from loguru import logger
 
 from pipecat.frames.frames import (
@@ -34,6 +38,9 @@ from pipecat.frames.frames import (
     TTSSpeakFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+
+if TYPE_CHECKING:
+    from tools import CallState
 
 
 class ForcedSpeechOverride(FrameProcessor):
@@ -46,7 +53,7 @@ class ForcedSpeechOverride(FrameProcessor):
             processor reads and clears it.
     """
 
-    def __init__(self, call_state, **kwargs) -> None:
+    def __init__(self, call_state: "CallState", **kwargs) -> None:
         super().__init__(**kwargs)
         self._call_state = call_state
         self._suppressing: bool = False
