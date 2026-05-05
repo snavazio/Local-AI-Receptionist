@@ -195,6 +195,63 @@ class TestChitchat:
         assert not bot._is_known_chitchat("")
 
 
+# ---------- _looks_like_assistant_question ----------
+
+class TestLooksLikeAssistantQuestion:
+    """Used to catch the model trying to pass its own question through as
+    a take_message argument (the 'self-question' bug)."""
+
+    def test_question_mark_caught(self):
+        assert bot._looks_like_assistant_question("What's your name?")
+
+    def test_anything_else_phrase_caught(self):
+        assert bot._looks_like_assistant_question("Is there anything else?")
+        assert bot._looks_like_assistant_question("Is there anything else I can help with?")
+
+    def test_would_you_like_caught(self):
+        assert bot._looks_like_assistant_question("Would you like to leave a message?")
+
+    def test_can_i_get_caught(self):
+        assert bot._looks_like_assistant_question("Can I get your name please?")
+
+    def test_real_message_passes(self):
+        assert not bot._looks_like_assistant_question("My crown is loose")
+        assert not bot._looks_like_assistant_question("I want a cleaning")
+
+    def test_non_string(self):
+        assert not bot._looks_like_assistant_question(None)
+        assert not bot._looks_like_assistant_question(123)
+
+
+# ---------- _save_record ----------
+
+class TestSaveRecord:
+    def test_writes_json_under_log_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bot, "LOG_DIR", tmp_path)
+        fn = bot._save_record("callback", {
+            "caller_name": "Steve",
+            "callback_number": "2013882149",
+        })
+        assert fn.exists()
+        assert fn.parent == tmp_path
+        assert fn.name.startswith("callback_")
+        assert fn.name.endswith(".json")
+        import json
+        data = json.loads(fn.read_text())
+        assert data["caller_name"] == "Steve"
+
+    def test_handles_non_json_serializable(self, tmp_path, monkeypatch):
+        # default=str fallback should let datetimes etc through.
+        import datetime as dt
+        monkeypatch.setattr(bot, "LOG_DIR", tmp_path)
+        fn = bot._save_record("message", {
+            "ts": dt.datetime(2026, 5, 5, 12, 0, 0),
+            "msg": "hi",
+        })
+        assert fn.exists()
+        # Should not have raised
+
+
 # ---------- placeholder normalization ----------
 
 class TestPlaceholderNormalize:
