@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://localhost:11434/*)",
+      "Bash(nvidia-smi *)",
+      "Bash(.venv/bin/python -m pytest*)",
+      "Bash(.venv/bin/python eval/run_eval.py*)",
+      "Bash(.venv/bin/python eval/watch.py*)",
+      "Bash(.venv/bin/python eval/trend.py*)",
+      "Bash(.venv/bin/python eval/improve.py*)"
+    ]
+  }
+}
