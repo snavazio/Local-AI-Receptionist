@@ -185,6 +185,38 @@ The stack itself is unsurprising. The interesting work was making local models b
 - **Not a calendar system.** Bookings are written to JSON; a human (or your existing scheduling system) does the actual confirmation.
 - **Not a state machine.** It's still LLM-driven turn taking with tool calls, layered with defensive validators. A more robust production version would use [pipecat-flows](https://github.com/pipecat-ai/pipecat-flows) for explicit FSM-driven slot filling.
 
+## Project layout
+
+```
+bot.py                   live LLM-driven bot (production)
+bot_flows.py             FSM-driven alternative via pipecat-ai-flows
+eval/
+  cases.yaml             100 scripted scenarios across 10 categories
+  run_eval.py            text-only eval harness (no audio)
+  watch.py               regression watcher (cron-friendly)
+  trend.py               sparkline visualizer for history.jsonl
+  improve.py             scaffold for autonomous prompt-only optimization
+tests/                   pytest unit tests (~113, no Ollama, ~1.6 s)
+tools/
+  ws_smoke.py            minimal WebSocket smoke client (silence-only)
+  gen_audio_fixtures.py  Piper-driven WAV generation from cases.yaml
+  load_test_audio.py     N concurrent WebSocket sessions, real audio
+docs/RUNBOOK.md          operational guidance (failure modes, knobs, recipes)
+Makefile                 one-command access to all common tasks
+```
+
+Common entry points:
+
+```bash
+make help        # list everything
+make test        # 1.6 s unit-test pass
+make watch       # ~25-min full eval + diff against baseline
+make trend       # ASCII sparkline of pass rate / latency over time
+make bot         # run the live bot
+```
+
+For day-to-day operation see [docs/RUNBOOK.md](docs/RUNBOOK.md).
+
 ## License & attribution
 
 Forked from the [Pipecat phone-bot quickstart](https://github.com/pipecat-ai/pipecat-quickstart-phone-bot).
