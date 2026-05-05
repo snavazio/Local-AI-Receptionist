@@ -1,6 +1,6 @@
 # Local AI Receptionist
 
-A fully local AI receptionist for a dental office, built on [Pipecat](https://github.com/pipecat-ai/pipecat). It answers calls, holds a natural conversation, collects appointment-callback requests, takes messages, and escalates emergencies — all running on a single workstation with **no cloud APIs**.
+A fully local AI receptionist for a dental office, built on [Pipecat](https://github.com/pipecat-ai/pipecat). It answers calls, holds a natural conversation, collects appointment-callback requests, takes messages, and escalates emergencies — all running on a single workstation with **no cloud APIs**. This is a path for regulated industries to have required control over the data. This can be useful for Legal, Financial and Health Care industries(HIPPA).
 
 ## Why this exists
 
