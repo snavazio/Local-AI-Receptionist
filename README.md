@@ -104,6 +104,20 @@ State files (gitignored):
 - `eval/history.jsonl` — append-only trend log
 - `eval/regression_report.md` — most recent diff report
 
+After a few runs, glance at the trend with `python eval/trend.py`:
+
+```
+Pass rate (%):
+   ▂▂▄▄▆▆█  range [70, 85]
+  current: 85%   first shown: 70%
+
+LLM p50 (ms):
+   ▁▂▃▅▆▇█  range [1500, 1710]
+  current: 1710 ms   first shown: 1500 ms
+```
+
+Per-category sparklines and a tabular last-10 view help spot drift.
+
 Schedule it from cron / systemd timer / GitHub Actions. Example crontab line for a nightly 2 AM run that posts the report on regression:
 
 ```cron
