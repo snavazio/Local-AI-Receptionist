@@ -221,7 +221,11 @@ def append_history(summary: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--concurrency", type=int, default=2)
+    parser.add_argument(
+        "--concurrency", type=int, default=1,
+        help="Default 1 for deterministic results — concurrency >1 introduces "
+             "false-alarm flips of ~10pp due to Ollama context-cache thrashing.",
+    )
     parser.add_argument("--model", help="Override LLM model (sets EVAL_MODEL)")
     parser.add_argument(
         "--update-baseline", action="store_true",
