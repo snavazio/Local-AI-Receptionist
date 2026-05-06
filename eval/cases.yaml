@@ -4676,3 +4676,879 @@
     tool_must_not_be_called:
       - book_appointment_callback
     max_assistant_farewells: 1
+
+# ============================================================================
+# BATCH 6 — NEW categories: name_edge (10), false_emergency (10),
+# multi_intent (8), out_of_scope (10), disfluent (8), reschedule (6),
+# hours_edge (4) = 56 new cases
+# ============================================================================
+
+- id: name_edge_apostrophe_obrien
+  category: name_edge
+  description: Apostrophe in surname (O'Brien). Tests that the LLM doesn't reject apostrophe-containing names as garbage.
+  user_turns:
+    - "Tuesday at 2 PM."
+    - "Sean O'Brien."
+    - "415-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "brien"
+    max_assistant_farewells: 1
+
+- id: name_edge_apostrophe_dangelo
+  category: name_edge
+  description: Apostrophe in surname (D'Angelo).
+  user_turns:
+    - "Wednesday at 3 PM."
+    - "Marco D'Angelo."
+    - "212-555-0144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "angelo"
+    max_assistant_farewells: 1
+
+- id: name_edge_hyphen_maryann
+  category: name_edge
+  description: Hyphenated first name (Mary-Ann). Tests that the LLM doesn't split it.
+  user_turns:
+    - "Friday at 9 AM."
+    - "Mary-Ann Cooper."
+    - "503-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "mary"
+    max_assistant_farewells: 1
+
+- id: name_edge_hyphen_jeanpierre
+  category: name_edge
+  description: Hyphenated French first name (Jean-Pierre).
+  user_turns:
+    - "Monday at 11 AM."
+    - "Jean-Pierre Mercier."
+    - "415-555-0123."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "jean"
+    max_assistant_farewells: 1
+
+- id: name_edge_yes_in_name
+  category: name_edge
+  description: Name 'Yvonne' starts with sound-alike 'yes' phonemes. Tests the LLM doesn't treat it as an affirmation.
+  user_turns:
+    - "Wednesday at 1 PM."
+    - "Yvonne Bell."
+    - "650-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "yvonne"
+    max_assistant_farewells: 1
+
+- id: name_edge_no_in_name
+  category: name_edge
+  description: Name 'Noah' starts with the word 'no'. Tests the LLM doesn't treat it as a decline.
+  user_turns:
+    - "Tuesday at 10 AM."
+    - "Noah Stein."
+    - "212-555-0177."
+    - "Yes."
+    - "No, that's it."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "noah"
+    max_assistant_farewells: 1
+
+- id: name_edge_multipart_jr
+  category: name_edge
+  description: Multi-part name with 'Junior' suffix.
+  user_turns:
+    - "Friday at 4 PM."
+    - "Robert Williams Junior."
+    - "404-555-0144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "robert"
+    max_assistant_farewells: 1
+
+- id: name_edge_multipart_diacritics
+  category: name_edge
+  description: Multi-part name with diacritics. Tests acceptance of non-ASCII characters.
+  user_turns:
+    - "Wednesday at 2 PM."
+    - "María José García."
+    - "619-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "maría"
+    max_assistant_farewells: 1
+
+- id: name_edge_whisper_fragile_xinyi
+  category: name_edge
+  description: Chinese-origin name (Xinyi Wang).
+  user_turns:
+    - "Tuesday at 11 AM."
+    - "Xinyi Wang."
+    - "415-555-0102."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "xinyi"
+    max_assistant_farewells: 1
+
+- id: name_edge_whisper_fragile_siobhan
+  category: name_edge
+  description: Irish-origin name (Siobhán) with apostrophe + diacritic combo.
+  user_turns:
+    - "Thursday at 3 PM."
+    - "Siobhán O'Sullivan."
+    - "503-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "siobh"
+    max_assistant_farewells: 1
+
+- id: false_emergency_cold_sensitivity
+  category: false_emergency
+  description: Cold-water sensitivity. Sounds dental but should NOT escalate.
+  user_turns:
+    - "I have a tooth that's sensitive when I drink cold water."
+    - "It's been like this for a few weeks."
+    - "I'd like to book."
+    - "Tuesday at 2 PM works."
+    - "Charlene Wells."
+    - "415-555-0144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "charlene"
+    tool_must_not_be_called:
+      - escalate_emergency
+    max_assistant_farewells: 1
+
+- id: false_emergency_lost_retainer
+  category: false_emergency
+  description: Lost retainer. Take a message, do NOT escalate.
+  user_turns:
+    - "I lost my retainer this morning."
+    - "Can I leave a message?"
+    - "Tell the doctor I need a new retainer."
+    - "Felix Bauer, 213-555-0107."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_must_not_be_called:
+      - escalate_emergency
+    max_assistant_farewells: 1
+
+- id: false_emergency_lost_filling
+  category: false_emergency
+  description: Old filling fell out, no pain. Should book.
+  user_turns:
+    - "An old filling fell out yesterday."
+    - "It doesn't hurt but I'd like to come in."
+    - "Wednesday at 9 AM."
+    - "Olive Sims, 503-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "olive"
+    tool_must_not_be_called:
+      - escalate_emergency
+    max_assistant_farewells: 1
+
+- id: false_emergency_minor_chip
+  category: false_emergency
+  description: Minor chip with no pain. Should book.
+  user_turns:
+    - "I chipped my front tooth a tiny bit this morning."
+    - "No pain, no bleeding — just want it smoothed out."
+    - "Friday at 1 PM."
+    - "Brennan Hayes, 619-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "brennan"
+    tool_must_not_be_called:
+      - escalate_emergency
+    max_assistant_farewells: 1
+
+- id: false_emergency_dull_ache
+  category: false_emergency
+  description: General dull ache for a week. Not severe — should book.
+  user_turns:
+    - "I've had a dull achy feeling in one of my back teeth for about a week."
+    - "Not bad pain, just annoying."
+    - "Tuesday at 3 PM."
+    - "Iris Quinn, 415-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "iris"
+    tool_must_not_be_called:
+      - escalate_emergency
+    max_assistant_farewells: 1
+
+- id: false_emergency_old_injury
+  category: false_emergency
+  description: Old chip from months ago. Definitely not urgent.
+  user_turns:
+    - "I chipped a tooth a few months ago and never got it fixed."
+    - "Want to come in now."
+    - "Monday at 10 AM."
+    - "Kingston Park, 503-555-0144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "kingston"
+    tool_must_not_be_called:
+      - escalate_emergency
+    max_assistant_farewells: 1
+
+- id: false_emergency_cosmetic_concern
+  category: false_emergency
+  description: Yellow teeth, cosmetic. Should book.
+  user_turns:
+    - "My teeth have been getting yellow."
+    - "I'd like to come in for whitening."
+    - "Wednesday at 2 PM."
+    - "Tessa Boyd, 213-555-0177."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "tessa"
+    tool_must_not_be_called:
+      - escalate_emergency
+    max_assistant_farewells: 1
+
+- id: false_emergency_grinding
+  category: false_emergency
+  description: Night grinding. Should book a consultation.
+  user_turns:
+    - "I think I've been grinding my teeth at night."
+    - "Want to talk to the doctor about a night guard."
+    - "Friday at 11 AM."
+    - "Bryce Larkin, 503-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "bryce"
+    tool_must_not_be_called:
+      - escalate_emergency
+    max_assistant_farewells: 1
+
+- id: false_emergency_loose_filling
+  category: false_emergency
+  description: Loose filling, no pain. Should book.
+  user_turns:
+    - "One of my fillings feels loose."
+    - "No pain, just feels weird."
+    - "Tuesday at 4 PM."
+    - "Maeve Donnelly, 415-555-0123."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "maeve"
+    tool_must_not_be_called:
+      - escalate_emergency
+    max_assistant_farewells: 1
+
+- id: false_emergency_canker_sore
+  category: false_emergency
+  description: Canker sore — not a dental emergency.
+  user_turns:
+    - "I have a canker sore that's been bothering me for a few days."
+    - "OK, I'll just wait it out then. Thanks. Bye."
+  expect:
+    tool_must_not_be_called:
+      - escalate_emergency
+    max_assistant_farewells: 1
+
+- id: multi_intent_book_plus_message
+  category: multi_intent
+  description: Caller wants to book AND leave a separate message.
+  user_turns:
+    - "I want to book a cleaning AND leave a message about my insurance."
+    - "Tuesday at 2 PM works for the cleaning."
+    - "And tell Dr. Smith I need to switch to my new insurance."
+    - "Saoirse Conway, 415-555-0144."
+    - "Yes."
+    - "No, that's it."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "saoirse"
+    max_assistant_farewells: 1
+
+- id: multi_intent_book_plus_question
+  category: multi_intent
+  description: Caller asks an info question, then books in the same call.
+  user_turns:
+    - "Quick question — are you open weekends?"
+    - "OK that works. Now I'd like to book Tuesday at 11 AM."
+    - "Hudson Vega, 503-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "hudson"
+    assistant_must_say_any:
+      - "Monday through Friday"
+      - "monday through friday"
+    max_assistant_farewells: 1
+
+- id: multi_intent_message_plus_emergency_ask
+  category: multi_intent
+  description: Caller asks for emergency line (info, not real emergency) AND leaves a message.
+  user_turns:
+    - "What's your emergency line?"
+    - "OK. Also, can you take a message?"
+    - "Tell Dr. Smith I'd like to discuss switching to monthly cleanings."
+    - "Cordelia Ross, 213-555-0166."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "cordelia"
+    tool_must_not_be_called:
+      - escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+    max_assistant_farewells: 1
+
+- id: multi_intent_book_plus_referral
+  category: multi_intent
+  description: Caller books AND asks for a referral.
+  user_turns:
+    - "I want to book a cleaning, and also ask for a referral to an oral surgeon."
+    - "Wednesday at 3 PM for the cleaning."
+    - "Edmund Park, 619-555-0188."
+    - "Yes."
+    - "And take a message — please ask Dr. Smith for an oral surgeon referral."
+    - "No, that's it."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "edmund"
+    max_assistant_farewells: 1
+
+- id: multi_intent_reschedule_plus_book
+  category: multi_intent
+  description: Caller wants to cancel an existing appt AND book a new one.
+  user_turns:
+    - "I have an appointment Tuesday but need to cancel that one."
+    - "Then I want to book a new one Thursday at 2 PM instead."
+    - "Beverly Hayes, 415-555-0102."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "beverly"
+    max_assistant_farewells: 1
+
+- id: multi_intent_two_messages
+  category: multi_intent
+  description: Caller has two separate questions for the doctor.
+  user_turns:
+    - "I'd like to leave two messages for Dr. Smith."
+    - "First, ask if I can use whitening strips after my cleaning."
+    - "Second, ask about replacing my night guard."
+    - "Augustin Reyes, 503-555-0114."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "augustin"
+    max_assistant_farewells: 1
+
+- id: multi_intent_book_for_self_and_kid
+  category: multi_intent
+  description: Caller wants two appointments — for self and child.
+  user_turns:
+    - "I want to book cleanings for me and my daughter."
+    - "Tuesday at 2 PM for me, 3 PM for her."
+    - "I'm Lila Knox, 213-555-0144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "lila"
+    max_assistant_farewells: 1
+
+- id: multi_intent_question_then_book
+  category: multi_intent
+  description: Caller asks if office accepts new patients, then books.
+  user_turns:
+    - "Are you accepting new patients?"
+    - "Great — book me for Wednesday at 10 AM."
+    - "Otis Lambert, 619-555-0177."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "otis"
+    max_assistant_farewells: 1
+
+- id: out_of_scope_pricing
+  category: out_of_scope
+  description: Asks crown pricing. Bot has no pricing — should redirect.
+  user_turns:
+    - "How much does a crown cost?"
+    - "OK, can you take a message about that?"
+    - "Please have someone in billing call with crown pricing."
+    - "Joaquin Wells, 213-555-0144."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "joaquin"
+    assistant_must_not_say:
+      - "the cost is"
+      - "approximately"
+    max_assistant_farewells: 1
+
+- id: out_of_scope_insurance_specific
+  category: out_of_scope
+  description: Specific insurance + procedure question. Bot must not invent.
+  user_turns:
+    - "Does Aetna cover Invisalign?"
+    - "OK can you take a message?"
+    - "Have billing call about Aetna and Invisalign coverage."
+    - "Anika Patel, 415-555-0188."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "anika"
+    assistant_must_not_say:
+      - "yes, Aetna covers"
+      - "Aetna does cover"
+    max_assistant_farewells: 1
+
+- id: out_of_scope_specific_dentist
+  category: out_of_scope
+  description: Asks for Dr. Lopez (not at this office).
+  user_turns:
+    - "Is Dr. Lopez available?"
+    - "Oh — wrong office then. Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+      - take_message
+    assistant_must_say_any:
+      - "Smith"
+    max_assistant_farewells: 1
+
+- id: out_of_scope_sales_call
+  category: out_of_scope
+  description: Vendor cold call.
+  user_turns:
+    - "Hi, I'm calling from Acme Dental Supplies."
+    - "We have a great deal on chairs this quarter."
+    - "OK never mind. Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+      - take_message
+    max_assistant_farewells: 1
+
+- id: out_of_scope_wrong_number_obvious
+  category: out_of_scope
+  description: Caller wanted a pizza place.
+  user_turns:
+    - "Hi, I'd like a large pepperoni pizza for delivery."
+    - "Oh — wrong number. Sorry. Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+      - take_message
+    max_assistant_farewells: 1
+
+- id: out_of_scope_pediatric
+  category: out_of_scope
+  description: Asks if office sees toddlers.
+  user_turns:
+    - "Do you see toddlers? My son is two."
+    - "OK, can you have someone call me about that?"
+    - "Aubrey Frye, 503-555-0188."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "aubrey"
+    max_assistant_farewells: 1
+
+- id: out_of_scope_orthodontic
+  category: out_of_scope
+  description: Asks about ortho services. Bot doesn't know — message.
+  user_turns:
+    - "Do you do braces or Invisalign here?"
+    - "Take a message please — have someone call about ortho services."
+    - "Roman Petrov, 213-555-0102."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "roman"
+    max_assistant_farewells: 1
+
+- id: out_of_scope_lab_work
+  category: out_of_scope
+  description: Asks if office has its own dental lab on site.
+  user_turns:
+    - "Do you have your own dental lab on site?"
+    - "OK never mind. Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: out_of_scope_treatment_question
+  category: out_of_scope
+  description: Asks for medical advice. Bot must not give clinical guidance.
+  user_turns:
+    - "Should I take antibiotics for a tooth infection?"
+    - "OK can you have the doctor call back?"
+    - "Mira Tan, 415-555-0166."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "mira"
+    assistant_must_not_say:
+      - "yes, take"
+      - "I recommend"
+      - "you should take"
+    max_assistant_farewells: 1
+
+- id: out_of_scope_bill_payment
+  category: out_of_scope
+  description: Caller wants to pay over the phone. Bot can't process payments.
+  user_turns:
+    - "I want to pay my bill over the phone."
+    - "Can someone in billing call me?"
+    - "Liam Holloway, 619-555-0188."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "liam"
+    assistant_must_not_say:
+      - "credit card"
+    max_assistant_farewells: 1
+
+- id: disfluent_filler_words
+  category: disfluent
+  description: Heavy filler words throughout.
+  user_turns:
+    - "Um, hi, like, I want to, you know, book a thing."
+    - "Like, a cleaning, I mean."
+    - "Um, Tuesday I guess?"
+    - "Like, two PM."
+    - "Oh, I'm Sky, sorry."
+    - "Five oh three, five five five, oh one zero one."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "sky"
+      callback_number: "5035550101"
+    max_assistant_farewells: 1
+
+- id: disfluent_self_correction
+  category: disfluent
+  description: Multiple self-corrections in one turn.
+  user_turns:
+    - "I want — wait, I'd like — actually, can I — yes, I want to book."
+    - "Wednesday — no Thursday — at three PM."
+    - "Pia Donovan, 213-555-0144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "pia"
+      preferred_window: "thursday"
+    max_assistant_farewells: 1
+
+- id: disfluent_long_pause
+  category: disfluent
+  description: Caller pauses mid-sentence.
+  user_turns:
+    - "I'd like to..."
+    - "Sorry, where was I — book Tuesday at 1 PM."
+    - "Tobias Lin, 415-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "tobias"
+    max_assistant_farewells: 1
+
+- id: disfluent_caller_distracted
+  category: disfluent
+  description: Caller speaks to someone in background mid-call.
+  user_turns:
+    - "Hi I want to — hold on, kid, mom's on the phone — sorry, book a cleaning."
+    - "Friday at 11 AM."
+    - "Stephanie Burns, 503-555-0102."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "stephanie"
+    max_assistant_farewells: 1
+
+- id: disfluent_breathing_loud
+  category: disfluent
+  description: Caller sniffling/breathing audibly.
+  user_turns:
+    - "(sniffling) Hi, I want to book a cleaning."
+    - "Wednesday at 2 PM."
+    - "Caleb Rivers, 619-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "caleb"
+    max_assistant_farewells: 1
+
+- id: disfluent_phone_problem
+  category: disfluent
+  description: Caller says line is breaking up.
+  user_turns:
+    - "Sorry, you're cutting out — can you hear me?"
+    - "OK better now. I want to book Tuesday at 9 AM."
+    - "Vanessa Park, 415-555-0123."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "vanessa"
+    max_assistant_farewells: 1
+
+- id: disfluent_repeats_self
+  category: disfluent
+  description: Caller says the same thing twice consecutively.
+  user_turns:
+    - "I want to book. I want to book."
+    - "Tuesday at 3 PM, Tuesday at 3 PM."
+    - "Reagan Lee, 503-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "reagan"
+    max_assistant_farewells: 1
+
+- id: disfluent_starts_over
+  category: disfluent
+  description: Caller starts a sentence multiple times.
+  user_turns:
+    - "OK so I want to — actually, hi."
+    - "Hi. I, uh, want to schedule — let me start over. I'd like to book a cleaning."
+    - "Friday at 1 PM."
+    - "Madison Crowe, 213-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "madison"
+    max_assistant_farewells: 1
+
+- id: reschedule_move_to_later
+  category: reschedule
+  description: Existing appointment, wants to move it. Bot has no calendar — message.
+  user_turns:
+    - "I have an appointment Tuesday but need to move it to Thursday."
+    - "Can someone call me back to confirm the new time?"
+    - "Anjali Khanna, 213-555-0188."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "anjali"
+    max_assistant_farewells: 1
+
+- id: reschedule_cancel_outright
+  category: reschedule
+  description: Cancel existing appointment outright.
+  user_turns:
+    - "I need to cancel my appointment for Friday."
+    - "Tell Dr. Smith I won't be coming."
+    - "Devon Marsh, 503-555-0144."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "devon"
+    max_assistant_farewells: 1
+
+- id: reschedule_running_late
+  category: reschedule
+  description: Running late for an existing appointment.
+  user_turns:
+    - "I have an appointment in 30 minutes but I'm stuck in traffic."
+    - "Can you let them know I'll be 20 minutes late?"
+    - "Mac Ellison, 619-555-0107."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "mac"
+    max_assistant_farewells: 1
+
+- id: reschedule_unable_to_make
+  category: reschedule
+  description: Caller can't make upcoming appt due to conflict.
+  user_turns:
+    - "I can't make my Tuesday appointment — work conflict."
+    - "Can someone reach out about rescheduling?"
+    - "Phoebe Mason, 415-555-0166."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "phoebe"
+    max_assistant_farewells: 1
+
+- id: reschedule_change_doctor
+  category: reschedule
+  description: Caller wants to switch dentists; needs records transfer.
+  user_turns:
+    - "I'm switching to a different dentist."
+    - "Can someone help me transfer my records?"
+    - "Tate Rosen, 213-555-0177."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "tate"
+    max_assistant_farewells: 1
+
+- id: reschedule_check_status
+  category: reschedule
+  description: Caller doesn't remember if they have an appointment booked. Bot can't check — message.
+  user_turns:
+    - "I'm not sure if I have an appointment booked or not — can someone check?"
+    - "Cassidy Lee, 503-555-0188."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "cassidy"
+    assistant_must_not_say:
+      - "let me check"
+      - "I will look up"
+    max_assistant_farewells: 1
+
+- id: hours_edge_holiday
+  category: hours_edge
+  description: Asks about a specific holiday. Bot should not invent.
+  user_turns:
+    - "Are you open New Year's Day?"
+    - "OK, will call after the holiday. Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    assistant_must_not_say:
+      - "yes we are open"
+      - "yes we're open"
+    max_assistant_farewells: 1
+
+- id: hours_edge_lunch_break
+  category: hours_edge
+  description: Asks if office closes for lunch.
+  user_turns:
+    - "Do you close for lunch?"
+    - "OK thanks. Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: hours_edge_early_morning
+  category: hours_edge
+  description: Pre-8 AM availability question.
+  user_turns:
+    - "Do you have anything before 8 AM?"
+    - "OK, I'll find a 9 AM slot then. Tuesday at 9."
+    - "Eli Brock, 415-555-0102."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "eli"
+    assistant_must_say_any:
+      - "Monday through Friday"
+      - "monday through friday"
+      - "eight to five"
+    max_assistant_farewells: 1
+
+- id: hours_edge_late_evening
+  category: hours_edge
+  description: Late-evening availability question.
+  user_turns:
+    - "Anything after 6 PM available?"
+    - "OK, I'll come during the day then. Wednesday at 4 PM."
+    - "Tilly Jansen, 503-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "tilly"
+    max_assistant_farewells: 1
