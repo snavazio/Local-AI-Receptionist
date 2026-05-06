@@ -1,0 +1,19 @@
+[Unit]
+Description=Receptionist QA Dashboard (FastAPI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/snavazio/projects/receptionist/pipecat-quickstart-phone-bot
+Environment=DASHBOARD_HOST=0.0.0.0
+Environment=DASHBOARD_PORT=5055
+ExecStart=/home/snavazio/projects/receptionist/pipecat-quickstart-phone-bot/.venv/bin/python web_dashboard.py
+Restart=on-failure
+RestartSec=3
+# Run as the user that owns the project + venv. Replace if different.
+User=snavazio
+Group=snavazio
+
+[Install]
+WantedBy=multi-user.target

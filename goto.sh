@@ -41,11 +41,10 @@ echo
 echo "→ $(pwd)"
 [ -n "$VIRTUAL_ENV" ] && echo "→ venv active: $VIRTUAL_ENV"
 echo
-echo "Common commands:"
-echo "  python qa.py --smoke           # ~5 min iteration loop"
-echo "  python qa.py                   # full 356-case eval (~30-50 min)"
-echo "  python qa.py --model qwen2.5:14b,qwen2.5:7b   # multi-model compare"
-echo "  python -m pytest -q            # unit tests (~2 sec)"
-echo "  python eval/trend.py           # sparkline trend over runs"
-echo "  tail -f qa_runs/qa_*_progress.log    # live watch a running eval"
+echo "Quick start:"
+echo "  ./dashboard.sh                 # interactive menu (recommended)"
+echo "  make help                      # one-screen list of every command"
+echo "  make qa-smoke                  # ~5 min iteration loop"
+echo "  make status                    # snapshot: git/ollama/GPU/baseline"
+echo "  make test                      # unit tests (~2 sec)"
 echo

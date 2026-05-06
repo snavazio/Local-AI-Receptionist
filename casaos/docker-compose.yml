@@ -1,0 +1,53 @@
+# CasaOS app definition for the Receptionist QA Dashboard.
+#
+# The actual dashboard runs on the HOST (Flask/uvicorn at :5055) because it
+# needs the host's GPU, Ollama, and Python venv. This container is just a
+# tiny nginx that reverse-proxies the CasaOS-facing port to the host service,
+# so a tile shows up on the CasaOS dashboard.
+#
+# Install in CasaOS:
+#   App Store → "+" (top right) → Custom Install → paste this compose
+# Or via CLI:
+#   casaos-cli app-management install path=$(pwd)/casaos/docker-compose.yml
+
+name: receptionist-dashboard
+
+services:
+  receptionist-dashboard:
+    image: nginx:alpine
+    container_name: receptionist-dashboard
+    restart: unless-stopped
+    ports:
+      - "5056:80"   # CasaOS tile points here; nginx proxies to host:5055
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - casaos-network
+
+networks:
+  casaos-network:
+    name: casaos-network
+    external: true
+
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: receptionist-dashboard
+  description:
+    en_us: Local AI receptionist QA dashboard — run smoke evals, full evals, regression watcher, and inspect status from the browser.
+  tagline:
+    en_us: Voice-bot QA control panel
+  developer: snavazio
+  author: snavazio
+  icon: https://cdn.jsdelivr.net/gh/IconPark/icon-park@latest/source/dashboard-two.svg
+  thumbnail: https://cdn.jsdelivr.net/gh/IconPark/icon-park@latest/source/dashboard-two.svg
+  title:
+    en_us: Receptionist QA
+  category: Developer
+  port_map: "5056"
+  scheme: http
+  hostname: ""
+  index: /
