@@ -93,17 +93,25 @@ def _words_to_digits(text: str) -> str:
 def _extract_phone_digits(text: str) -> str | None:
     if not text:
         return None
-    digits = re.sub(r"\D", "", text)
-    if 7 <= len(digits) <= 11:
-        return digits
+    # Try the STRUCTURED phone pattern first (e.g. "201-388-2149" or
+    # "(201) 388-2149"). This avoids concatenating unrelated digit
+    # groups — e.g. "Tuesday at 2 PM. Phone 201-388-2149" must NOT
+    # become "22013882149".
     m = PHONE_PATTERN.search(text)
     if m:
         d = re.sub(r"\D", "", m.group(0))
         if 7 <= len(d) <= 11:
             return d
+    # Then try word-form digits (e.g. "two zero one three eight eight
+    # two one four nine"). Only when there's no structured phone.
     word_digits = _words_to_digits(text)
     if 7 <= len(word_digits) <= 11:
         return word_digits
+    # Last resort: strip all non-digits and check. Risky (can concat
+    # unrelated digits) — only fires if the prior two paths failed.
+    digits = re.sub(r"\D", "", text)
+    if 7 <= len(digits) <= 11:
+        return digits
     return None
 
 

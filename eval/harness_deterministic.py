@@ -37,7 +37,8 @@ from eval.slot_extractor import (
     classify_intent, extract_name, extract_phone,
     _find_day, _find_specific_time, is_vague_time,
     extract_yes_no, extract_message_topic,
-    detect_correction, split_at_correction,
+    detect_correction, split_at_correction, detect_hangup,
+    detect_full_redo,
 )
 
 
@@ -68,6 +69,20 @@ def advance(state: dict, user_text: str, prior_user_turns: list[str]) -> dict:
     Wednesday at 2 PM, not Tuesday."
     """
     s = state["state"]
+
+    # ── full-redo handling: caller wants to start over completely ──
+    if detect_full_redo(user_text):
+        # Wipe collected slots; intent stays. The next turn will
+        # re-extract from a clean slate.
+        for k in ("caller_name", "callback_number", "preferred_window",
+                  "day", "time_str", "message"):
+            state.pop(k, None)
+        # Stay at current state so we re-collect; if we were at
+        # CONFIRM/END, drop back to NAME.
+        if state["state"] in (S_CONFIRM, S_END):
+            state["state"] = S_NAME
+        # Don't return — let opportunistic extraction process this turn
+        # (the user might already have given new info on the same line).
 
     # ── correction handling: split + clear conflicting slots ──────
     is_correction = detect_correction(user_text)
@@ -103,7 +118,35 @@ def advance(state: dict, user_text: str, prior_user_turns: list[str]) -> dict:
     else:
         scan_text = user_text
 
-    # Always: emergency keywords short-circuit.
+    # Hangup detection — caller cut the call short.
+    if s != S_END and detect_hangup(user_text):
+        state["aborted"] = True
+        state["state"] = S_END
+        return state
+
+    # Emergency triage shortcut: if the bot's last prose asked
+    # "is this an emergency?" and the caller gave a SHORT yes-answer,
+    # escalate. Bare "yes"/"yeah" (≤3 words) → emergency. A long
+    # response starting with "yes" probably continues with intent
+    # ("yes, I'd like to book") — treat as not-emergency.
+    if s != S_END and state.get("_asked_emergency"):
+        ut = user_text.strip().rstrip(".,;:!?")
+        word_count = len(ut.split())
+        yn = extract_yes_no(user_text)
+        is_short_yes = (yn == "yes" and word_count <= 3)
+        # Or: long answer that contains an emergency keyword
+        has_emergency_kw = classify_intent(scan_text) == "emergency"
+        if is_short_yes or has_emergency_kw:
+            state["intent"] = "emergency"
+            state["emergency_reason"] = "caller confirmed emergency"
+            state["state"] = S_END
+            return state
+        # Anything else clears the emergency-asked flag and proceeds
+        # with normal intent flow on this same turn.
+        state["_asked_emergency"] = False
+
+    # Keyword fallback: if caller explicitly describes an emergency
+    # before we could ask, escalate immediately.
     if s != S_END and classify_intent(scan_text) == "emergency":
         state["intent"] = "emergency"
         state["emergency_reason"] = scan_text[:120]
@@ -175,6 +218,12 @@ def advance(state: dict, user_text: str, prior_user_turns: list[str]) -> dict:
         if nm:
             state["caller_name"] = nm
 
+    # Message topic — capture opportunistically for message-intent calls
+    # (since the simplified flow no longer routes through S_MESSAGE).
+    if state.get("intent") == "message" and not state.get("message"):
+        topic = extract_message_topic(scan_text, prior_turns=prior_user_turns)
+        if topic:
+            state["message"] = topic
     if s == S_MESSAGE and not state.get("message"):
         topic = extract_message_topic(scan_text, prior_turns=prior_user_turns)
         if topic:
@@ -199,8 +248,10 @@ def advance(state: dict, user_text: str, prior_user_turns: list[str]) -> dict:
 
 
 def _advance_after_data(state: dict) -> dict:
-    """After a slot got filled, jump to the next missing slot for the
-    current intent."""
+    """Try to collect intent + name + phone + (day/time for appointments,
+    message for messages). If we get stuck on the optional slots, the
+    case loop will set state['_give_up'] and we fall through to
+    S_CONFIRM gracefully ('I'll have someone call you back')."""
     intent = state.get("intent")
     if intent == "emergency":
         state["state"] = S_END
@@ -211,19 +262,34 @@ def _advance_after_data(state: dict) -> dict:
     if not state.get("callback_number"):
         state["state"] = S_PHONE
         return state
+    # Have intent + name + phone. For appointments, try to nail down day+time.
+    # If the case loop has marked us as 'give up', skip straight to confirm.
     if intent == "appointment":
-        if not (state.get("day") and state.get("time_str")):
-            state["state"] = S_WINDOW
+        if state.get("day") and state.get("time_str"):
+            state["preferred_window"] = state.get("preferred_window") or f"{state['day']} at {state['time_str']}"
+            state["state"] = S_CONFIRM
             return state
-        state["preferred_window"] = state.get("preferred_window") or f"{state['day']} at {state['time_str']}"
-        state["state"] = S_CONFIRM
+        if state.get("_give_up_window"):
+            # Graceful fallback: derive whatever window we can; the bot
+            # will say "I'll have someone call you back" without time.
+            day = state.get("day"); tm = state.get("time_str")
+            if day and tm: state["preferred_window"] = f"{day} at {tm}"
+            elif day:      state["preferred_window"] = day
+            elif tm:       state["preferred_window"] = tm
+            state["state"] = S_CONFIRM
+            return state
+        state["state"] = S_WINDOW
         return state
     if intent == "message":
-        if not state.get("message"):
-            state["state"] = S_MESSAGE
+        if state.get("message"):
+            state["state"] = S_CONFIRM
             return state
-        state["state"] = S_CONFIRM
+        if state.get("_give_up_message"):
+            state["state"] = S_CONFIRM
+            return state
+        state["state"] = S_MESSAGE
         return state
+    state["state"] = S_CONFIRM
     return state
 
 
@@ -245,12 +311,40 @@ ROLE = (
 _HUMAN_REQUEST = re.compile(
     r"\b(real person|talk to a human|speak to a human|speak to someone|"
     r"talk to someone|operator|live agent|human being)\b", re.IGNORECASE)
+_EMERGENCY_LINE_REQUEST = re.compile(
+    r"\b(emergency line|emergency number|after.?hours|number to call after)\b",
+    re.IGNORECASE,
+)
+_HOURS_REQUEST = re.compile(
+    r"\b(what.*hours|when.*open|when do you close|are you open|"
+    r"open monday|open tuesday|open wednesday|open thursday|open friday|"
+    r"open saturday|open sunday|business hours)\b",
+    re.IGNORECASE,
+)
+_ADDRESS_REQUEST = re.compile(
+    r"\b(your address|where are you located|where is your office|"
+    r"office address|street address|how do i get there)\b",
+    re.IGNORECASE,
+)
 
 
 def state_prompt(state: dict) -> str:
     s = state["state"]
     nm = state.get("caller_name")
     last_user = state.get("_last_user_text", "")
+    # Caller asked about practice info — recite the configured value.
+    if last_user and _EMERGENCY_LINE_REQUEST.search(last_user):
+        return (f"The caller asked for the emergency line. Reply EXACTLY: "
+                f"'For dental emergencies, please call {PRACTICE['emergency_line']} "
+                f"right away.' Include the digits as words: "
+                f"'{PRACTICE['emergency_line']}'.")
+    if last_user and _HOURS_REQUEST.search(last_user):
+        return (f"The caller asked about office hours. Reply: 'Our hours "
+                f"are {PRACTICE['hours']}. Anything else?' Include the exact "
+                f"phrase '{PRACTICE['hours']}'.")
+    if last_user and _ADDRESS_REQUEST.search(last_user):
+        return (f"The caller asked about the office address. Reply: "
+                f"'We're at {PRACTICE['address']}. Anything else?'")
     # Caller explicitly asked for a human — produce the canned response
     # with the assertion-required vocabulary.
     if last_user and _HUMAN_REQUEST.search(last_user):
@@ -259,8 +353,15 @@ def state_prompt(state: dict) -> str:
                 "Use those exact words including 'automated' and "
                 "'have someone call you'.")
     if s == S_TRIAGE:
-        return ("Ask the caller in one short question: are they booking an "
-                "appointment, leaving a message, or is this an emergency?")
+        # Always start by asking explicitly if it's an emergency. This is
+        # safety-critical — way more reliable than trying to detect every
+        # possible emergency phrasing in keywords.
+        if not state.get("_asked_emergency_once"):
+            return ("Ask the caller in ONE short question: 'Is this a "
+                    "dental emergency, or are you calling about something "
+                    "else?' Use the word 'emergency' verbatim.")
+        return ("Ask the caller what they're calling about — booking an "
+                "appointment, leaving a message, or something else?")
     if s == S_NAME:
         return "Ask for the caller's name in one short question."
     if s == S_PHONE:
@@ -277,15 +378,20 @@ def state_prompt(state: dict) -> str:
     if s == S_MESSAGE:
         return f"Ask {nm or 'the caller'} what message they want to leave for the doctor."
     if s == S_CONFIRM:
+        nm_part = f", {nm}" if nm else ""
+        win = state.get("preferred_window")
         intent = state.get("intent")
-        if intent == "appointment":
-            return (f"Confirm: {nm}'s appointment request for "
-                    f"{state.get('preferred_window')} is saved. Ask if "
-                    "there's anything else.")
+        if intent == "appointment" and win:
+            return (f"Say: 'Thanks{nm_part}, I have your appointment "
+                    f"request for {win}. Someone will call you back to "
+                    f"confirm. Anything else?'")
         if intent == "message":
-            return (f"Confirm: {nm}'s message has been recorded. Ask if "
-                    "there's anything else.")
-        return "Confirm the request is saved and ask if there's anything else."
+            return (f"Say: 'Thanks{nm_part}, I'll pass that along and "
+                    f"have someone call you back. Anything else?'")
+        # Graceful fallback — we have name+phone but couldn't lock down
+        # day/time. Promise a callback without committing to a time.
+        return (f"Say: 'Thanks{nm_part}, I'll have someone call you back "
+                f"at the number you gave. Anything else I can help with?'")
     if s == S_END:
         if state.get("intent") == "emergency":
             return (f"This is a dental emergency. Your reply MUST contain "
@@ -396,22 +502,34 @@ async def gen_reply(client: AsyncOpenAI, state: dict, transcript: list[dict]) ->
 # ──────────────── case runner ──────────────────────────────────────
 
 def synthesize_logical_call(state: dict) -> ToolCallRecord | None:
+    # Aborted calls (caller hung up mid-flow) — don't fabricate a booking.
+    if state.get("aborted"):
+        return None
     intent = state.get("intent")
     if intent == "emergency":
         return ToolCallRecord(name="escalate_emergency",
                               args={"reason": state.get("emergency_reason", "unspecified")},
                               result={"ok": True})
-    if intent == "appointment" and all(k in state for k in ("caller_name", "callback_number", "preferred_window")):
+    # Simplified: only intent + name + phone are required. Window/message
+    # are best-effort metadata.
+    if intent == "appointment" and all(k in state for k in ("caller_name", "callback_number")):
+        win = state.get("preferred_window")
+        if not win:
+            day = state.get("day"); tm = state.get("time_str")
+            if day and tm: win = f"{day} at {tm}"
+            elif day:      win = day
+            elif tm:       win = tm
+            else:          win = "callback requested — staff will follow up"
         return ToolCallRecord(name="save_request",
             args={"kind": "appointment", "caller_name": state["caller_name"],
                   "callback_number": state["callback_number"],
-                  "preferred_window": state["preferred_window"]},
+                  "preferred_window": win},
             result={"ok": True, "kind": "appointment"})
-    if intent == "message" and all(k in state for k in ("caller_name", "callback_number", "message")):
+    if intent == "message" and all(k in state for k in ("caller_name", "callback_number")):
+        msg = state.get("message") or "callback requested — staff will follow up"
         return ToolCallRecord(name="save_request",
             args={"kind": "message", "caller_name": state["caller_name"],
-                  "callback_number": state["callback_number"],
-                  "message": state["message"]},
+                  "callback_number": state["callback_number"], "message": msg},
             result={"ok": True, "kind": "message"})
     return None
 

@@ -22,22 +22,40 @@ from harness import _extract_phone_digits  # already handles digits + word-form
 _EMERGENCY_KEYWORDS = (
     # Trauma — multi-word so we don't fire on "tooth" alone
     "knocked out", "knocked-out", "knock out my tooth", "broken tooth",
-    "broke a tooth", "broke my tooth",
+    "broke a tooth", "broke my tooth", "snapped a tooth", "snapped my tooth",
+    "knocked sideways", "tooth was knocked",
     # Natural panicked-parent phrasings ("tooth came out", "tooth fell out")
     "tooth came out", "tooth fell out", "tooth got knocked", "tooth knocked out",
-    "tooth is loose", "tooth out",
-    "hit in the face", "fell on his face", "fell on her face",
+    "tooth is loose", "tooth out", "teeth feel loose",
+    "hit in the face", "fell on his face", "fell on her face", "fell on my face",
     # Bleeding — only the unambiguous escalations
     "won't stop bleeding", "can't stop the bleeding", "lots of blood",
-    "bleeding heavily", "heavy bleeding",
+    "bleeding heavily", "heavy bleeding", "bleeding a lot",
+    "gum is bleeding", "gums are bleeding", "blood everywhere",
+    "bleeding everywhere",
     # Severe pain phrasings — qualifier required, no bare "pain"
     "severe pain", "extreme pain", "intense pain", "really bad pain",
     "terrible pain", "excruciating", "unbearable pain", "agonizing pain",
     "horrible throbbing pain", "throbbing pain that won't",
+    "intense sharp pain", "sharp pain", "9 out of 10", "10 out of 10",
+    "ten out of ten", "9/10 pain", "10/10 pain", "isn't slowing down",
+    "isn't even slowing", "won't subside", "all day and",
+    # Inside of tooth exposed
+    "inside is exposed", "nerve is exposed",
     # Swelling — qualified
     "facial swelling", "abscess", "swelling in my face",
+    "face is swollen", "swollen face", "half my face",
+    "swollen jaw", "jaw is swollen", "barely open my mouth",
+    "can barely open", "can't open my mouth",
+    # Abscess descriptions
+    "bump on my gum", "big bump", "lump on my gum", "pus",
+    "infected gum", "gum infection",
+    # Infection signals
+    "have an infection", "got an infection", "i think i have an infection",
     # Direct
     "this is an emergency", "dental emergency", "it's urgent",
+    "this is urgent", "is urgent", "i need help right away",
+    "need help right away", "what do i do",
 )
 
 # Negation patterns — when these appear before an emergency keyword
@@ -62,12 +80,20 @@ def _is_negated(text: str, keyword: str) -> bool:
     return False
 _APPOINTMENT_KEYWORDS = (
     "book", "schedule", "make an appointment", "set up an appointment",
-    "come in for", "appointment for", "cleaning", "checkup", "exam",
+    "come in for", "come in", "coming in", "an appointment", "the appointment",
+    "appointment for", "appointment available", "an opening", "any openings",
+    "cleaning", "checkup", "exam", "consultation",
 )
 _MESSAGE_KEYWORDS = (
     "leave a message", "take a message", "tell the doctor", "tell the dentist",
     "have someone call", "have you call", "have somebody call", "callback",
-    "call me back about", "ask the doctor",
+    "call me back about", "ask the doctor", "tell him", "tell her",
+    "tell dr", "thank dr",
+    # Bare "message" forms
+    "message please", "quick message", "leave word", "leave a note",
+    # Reschedule + general callback
+    "need to reschedule", "reschedule my", "have someone call me back",
+    "can someone call me back",
 )
 # Out-of-scope or topical phrasings that should also be routed as "message"
 # (the bot has no calendar / no pricing — collect a callback request).
@@ -94,10 +120,23 @@ _CORRECTION_MARKERS = re.compile(
     re.IGNORECASE,
 )
 
+_FULL_REDO_MARKERS = re.compile(
+    r"\b(start over|restart|begin again|forget what|forget everything|"
+    r"scrap (?:that|all)|let me redo|let's redo|do it over|"
+    r"wrong info|gave you the wrong|gave you bad|i screwed)\b",
+    re.IGNORECASE,
+)
+
 
 def detect_correction(text: str) -> bool:
     """Returns True if the user is correcting / changing something they said."""
-    return bool(_CORRECTION_MARKERS.search(text or ""))
+    return bool(_CORRECTION_MARKERS.search(text or "") or
+                _FULL_REDO_MARKERS.search(text or ""))
+
+
+def detect_full_redo(text: str) -> bool:
+    """Returns True if caller wants to restart with fresh info."""
+    return bool(_FULL_REDO_MARKERS.search(text or ""))
 
 
 def split_at_correction(text: str) -> str:
@@ -122,6 +161,23 @@ def classify_intent(text: str) -> str | None:
     has_appt = any(kw in t for kw in _APPOINTMENT_KEYWORDS)
     has_msg = any(kw in t for kw in _MESSAGE_KEYWORDS)
     has_topical = any(kw in t for kw in _TOPICAL_MESSAGE_KEYWORDS)
+    # EXISTING-appointment signals beat appointment — caller is calling
+    # ABOUT an existing booking (running late, can't make it, status
+    # check, want to reschedule). They want a callback, not a new
+    # booking. We have no calendar so message-handoff is the right move.
+    existing_appt_signals = (
+        "have an appointment", "have my appointment", "my appointment",
+        "appointment booked", "appointment is booked", "existing appointment",
+        "appointment in", "appointment at", "appointment tomorrow",
+        "appointment today", "appointment for tomorrow", "appointment next",
+        "running late", "be late", "can't make", "cannot make", "won't make",
+        "stuck in traffic", "going to be late", "late for my",
+        "switching to", "switching dentist", "transfer my records",
+        "reschedule", "move my appointment", "change my appointment",
+        "move it to",
+    )
+    if any(kw in t for kw in existing_appt_signals):
+        return "message"
     if has_appt:
         return "appointment"
     if has_msg or has_topical:
@@ -130,6 +186,16 @@ def classify_intent(text: str) -> str | None:
     # any other intent words. Common opener: "Wednesday at 3 PM."
     if _find_day(t) and _find_specific_time(t):
         return "appointment"
+    # Looser appointment fallback: just a day name + booking-shaped phrasing.
+    # Catches "Tuesday at 11", "Friday morning", "this Friday", "next week".
+    # In a dental-receptionist context, mentioning a day strongly implies
+    # appointment. Emergency was already checked above so this is safe.
+    if _find_day(t):
+        # Avoid firing on questions about hours, etc.
+        if not any(p in t for p in ("open on", "open monday", "closed on",
+                                    "what time do you", "are you open",
+                                    "your hours")):
+            return "appointment"
     return None
 
 
@@ -137,12 +203,14 @@ def classify_intent(text: str) -> str | None:
 
 _NAME_PATTERNS = [
     re.compile(r"\bmy name is\s+([a-z][a-z'\.\- ]{1,40})", re.IGNORECASE),
+    re.compile(r"\bname is\s+([a-z][a-z'\.\- ]{1,40})", re.IGNORECASE),  # "name is Bob"
     re.compile(r"\bi(?:'m| am)\s+([a-z][a-z'\.\- ]{1,40})", re.IGNORECASE),
     re.compile(r"\bthis is\s+([a-z][a-z'\.\- ]{1,40})", re.IGNORECASE),
     re.compile(r"\bcall me\s+([a-z][a-z'\.\- ]{1,40})", re.IGNORECASE),
+    # "X speaking" — "Anya speaking", "Dr. Smith speaking"
+    re.compile(r"\b([A-Z][a-z'\.\-]+(?:\s+[A-Z][a-z'\.\-]+)?)\s+speaking\b"),
     # "It's X" — case-sensitive on the captured name to avoid matching
     # idioms like "It's been like this" / "It's hurting" / "It's late"
-    # where the captured word would be lowercase.
     re.compile(r"\bIt'?s\s+([A-Z][a-z'\.\- ]{1,40})"),
 ]
 # Words that should never be treated as a name (common confusions when
@@ -168,7 +236,21 @@ _NAME_BLOCKLIST = {
     "available", "busy", "free", "open", "closed", "ready",
     "scrap", "scrap that", "wait", "actually", "instead",
     "twelve-thirty", "twelve thirty",
-    "sure", "which",
+    "sure", "which", "ideally", "like", "anyway", "sorry",
+    # Words from broken patterns ("name is Bob")
+    "not", "name", "is",
+    # Phrases from "I'm stuck/late/etc." patterns
+    "stuck", "running", "late", "early", "calling",
+    # Switching context phrases
+    "switching", "transferring",
+    # Politeness fillers commonly mis-extracted as names
+    "great", "perfect", "wonderful", "absolutely", "definitely",
+    "i mean", "you know", "let me", "let's", "hmm", "uhh",
+    "met", "meet",
+    # Time-word stand-ins
+    "four-thirty", "two-thirty", "three-thirty", "five-thirty",
+    "six-thirty", "seven-thirty", "eight-thirty", "nine-thirty",
+    "ten-thirty", "eleven-thirty",
     # Pronouns / fillers
     "you", "me", "him", "her", "them", "us", "we", "they",
     # Prepositions
@@ -326,6 +408,11 @@ def _find_specific_time(text: str, *, in_window_state: bool = False) -> str | No
         m = _TIME_BARE_WORD.search(t)
         if m:
             return m.group(0)
+        # Bare digit time after "at": "at 11", "at 3", "at 2:30"
+        m = re.search(r"\bat\s+(\d{1,2})(?::(\d{2}))?\b(?!\s*(?:am|pm))",
+                      t, re.IGNORECASE)
+        if m:
+            return m.group(0)
     return None
 
 
@@ -355,6 +442,20 @@ def extract_window(text: str, *, accumulated_day: str | None = None,
 _YES_WORDS = {"yes", "yeah", "yep", "yup", "sure", "correct", "right",
               "okay", "ok", "please", "absolutely", "exactly"}
 _NO_WORDS = {"no", "nope", "nah", "not really", "incorrect", "wrong"}
+
+# Caller is hanging up unexpectedly — don't auto-save a partially-collected
+# request as a confirmed booking.
+_HANGUP_PATTERNS = re.compile(
+    r"\b(i'?ll call back|gotta go|got to go|have to go|my boss is calling|"
+    r"sorry,?\s*(?:i|gotta|have)|talk later|catch you later|bye(?:\s|\.|$))",
+    re.IGNORECASE,
+)
+
+
+def detect_hangup(text: str) -> bool:
+    """True if the caller signaled they're cutting the call short without
+    confirming the booking/message."""
+    return bool(_HANGUP_PATTERNS.search(text or ""))
 
 
 def extract_yes_no(text: str) -> str | None:
