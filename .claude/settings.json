@@ -7,7 +7,10 @@
       "Bash(.venv/bin/python eval/run_eval.py*)",
       "Bash(.venv/bin/python eval/watch.py*)",
       "Bash(.venv/bin/python eval/trend.py*)",
-      "Bash(.venv/bin/python eval/improve.py*)"
+      "Bash(.venv/bin/python eval/improve.py*)",
+      "Read(/tmp/**)",
+      "Read(/home/snavazio/.claude/**)",
+      "Read(/home/snavazio/projects/receptionist/**)"
     ]
   }
 }
