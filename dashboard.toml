@@ -1,0 +1,106 @@
+# Dashboard config for the receptionist QA project.
+
+[project]
+name        = "Receptionist QA"
+slug        = "receptionist"
+host_port   = 5055
+casaos_port = 5056
+
+# ─── QA / eval ──────────────────────────────────────────────────────
+
+[[command]]
+id    = "qa-smoke"
+group = "QA / eval"
+label = "Smoke eval (~5 min)"
+desc  = "31 cases, fast iteration loop"
+argv  = ["make", "qa-smoke"]
+
+[[command]]
+id    = "qa-full"
+group = "QA / eval"
+label = "Full eval (~30-50 min)"
+desc  = "All 356 cases"
+argv  = ["make", "qa-full"]
+
+[[command]]
+id    = "qa-judge"
+group = "QA / eval"
+label = "Smoke + judge"
+desc  = "Adds LLM-as-judge scoring"
+argv  = ["make", "qa-judge"]
+
+[[command]]
+id    = "qa-multi"
+group = "QA / eval"
+label = "Multi-model bake-off"
+desc  = "Default: qwen2.5:14b vs 7b"
+argv  = ["make", "qa-multi"]
+
+[[command]]
+id    = "watch"
+group = "QA / eval"
+label = "Regression watcher"
+desc  = "Eval + diff vs baseline"
+argv  = ["make", "watch"]
+
+# ─── Tests ──────────────────────────────────────────────────────────
+
+[[command]]
+id    = "test"
+group = "Tests"
+label = "Unit tests"
+desc  = "~2 sec, no GPU"
+argv  = ["make", "test"]
+
+[[command]]
+id    = "test-verbose"
+group = "Tests"
+label = "Unit tests (verbose)"
+desc  = "Per-test output"
+argv  = ["make", "test-verbose"]
+
+[[command]]
+id    = "lint"
+group = "Tests"
+label = "Lint"
+desc  = "AST + cases.yaml"
+argv  = ["bash", "-c", "make lint && make lint-yaml"]
+
+# ─── Inspect ────────────────────────────────────────────────────────
+
+[[command]]
+id    = "status"
+group = "Inspect"
+label = "Status snapshot"
+desc  = "Git / Ollama / GPU / baseline"
+argv  = ["make", "status"]
+
+[[command]]
+id    = "trend"
+group = "Inspect"
+label = "Trend (last 10 runs)"
+desc  = "ASCII sparklines"
+argv  = ["make", "trend"]
+
+[[command]]
+id    = "last-report"
+group = "Inspect"
+label = "Last QA report"
+desc  = "Most recent qa_*.md"
+argv  = ["make", "last-report"]
+
+# ─── Housekeeping ──────────────────────────────────────────────────
+
+[[command]]
+id    = "clean"
+group = "Housekeeping"
+label = "Clean ephemeral reports"
+desc  = "Keeps baseline + history"
+argv  = ["make", "clean"]
+
+[[command]]
+id    = "help"
+group = "Housekeeping"
+label = "Show make help"
+desc  = "Full target list"
+argv  = ["make", "help"]

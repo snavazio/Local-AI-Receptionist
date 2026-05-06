@@ -186,3 +186,4 @@ tests/audio_fixtures/
 
 # qa.py output reports
 qa_runs/
+.dashboard/
