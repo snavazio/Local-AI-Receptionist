@@ -2720,3 +2720,577 @@
       - "let me check the doctor's"
       - "let me look at"
     max_assistant_farewells: 1
+
+# ============================================================================
+# BATCH 3 — correction + cancel variants (40 cases)
+# Same _alt_values + _phrasing variant strategy.
+# ============================================================================
+
+- id: correction_mid_flow_alt_values
+  category: correction
+  description: |
+    Caller provides full booking in turn 1, then immediately corrects
+    the day. Different identity. Verifies the LLM updates the slot and
+    proceeds with corrected values.
+  user_turns:
+    - "I'd like Wednesday at 1 PM. Anita, 312-555-0177."
+    - "Sorry, actually Thursday at 1 PM, not Wednesday."
+    - "Yes."
+    - "No thanks."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      preferred_window: "thursday"
+    max_assistant_farewells: 1
+
+- id: correction_mid_flow_phrasing
+  category: correction
+  description: |
+    Mid-flow correction phrased as 'I take that back'. Tests synonym
+    recognition for correction triggers.
+  user_turns:
+    - "Friday at 11 AM. Pippa Rivers, 503-555-0125."
+    - "I take that back — Monday at 11 AM works better."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      preferred_window: "monday"
+    max_assistant_farewells: 1
+
+- id: correction_phone_typo_alt_values
+  category: correction
+  description: Caller corrects a phone digit. Different identity than original.
+  user_turns:
+    - "Wednesday at 4 PM."
+    - "Cesar."
+    - "619-555-0144."
+    - "Wait, that's 619-555-0145, not 0144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      callback_number: "6195550145"
+    max_assistant_farewells: 1
+
+- id: correction_phone_typo_phrasing
+  category: correction
+  description: Phone correction phrased as 'I misspoke'. Tests trigger variation.
+  user_turns:
+    - "Tuesday at 10 AM."
+    - "Aubrey."
+    - "917-555-0181."
+    - "I misspoke — last digit's a 9, so 917-555-0189."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      callback_number: "9175550189"
+    max_assistant_farewells: 1
+
+- id: correction_name_alt_values
+  category: correction
+  description: Caller corrects spelling of name. Different name than original.
+  user_turns:
+    - "Tuesday at 3 PM."
+    - "Genevieve."
+    - "Sorry, two N's — Genneviève."
+    - "415-555-0162."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "genneviève"
+    max_assistant_farewells: 1
+
+- id: correction_name_phrasing
+  category: correction
+  description: Name correction phrased as 'actually it's X, not Y'.
+  user_turns:
+    - "Wednesday at 9 AM."
+    - "Phil — actually it's Bill, sorry."
+    - "650-555-0144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "bill"
+    max_assistant_farewells: 1
+
+- id: correction_time_alt_values
+  category: correction
+  description: Caller corrects time. Different identity than original.
+  user_turns:
+    - "Thursday at 11 AM."
+    - "Actually 12 PM, not 11."
+    - "Tomas."
+    - "303-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      preferred_window: "12"
+    max_assistant_farewells: 1
+
+- id: correction_time_phrasing
+  category: correction
+  description: Time correction as 'one hour later'. Relative-time correction.
+  user_turns:
+    - "Monday at 1 PM."
+    - "One hour later actually — 2 PM."
+    - "Stevie."
+    - "313-555-0177."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      preferred_window: "2"
+    max_assistant_farewells: 1
+
+- id: correction_to_message_alt_values
+  category: correction
+  description: Caller switches from booking to message. Different identity + topic.
+  user_turns:
+    - "I'd like to book Friday at 1 PM."
+    - "Actually, can I just leave a message instead?"
+    - "Tell Dr. Smith I have a question about my x-ray results."
+    - "Mark."
+    - "713-555-0188."
+    - "No, that's it."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "mark"
+      callback_number: "7135550188"
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: correction_to_message_phrasing
+  category: correction
+  description: Booking-to-message switch phrased as 'on second thought'.
+  user_turns:
+    - "I want an appointment Tuesday."
+    - "On second thought, just take a message."
+    - "Tell the doctor I'd like more info on whitening."
+    - "Hilda."
+    - "612-555-0144."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "hilda"
+      callback_number: "6125550144"
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: correction_double_back_alt_values
+  category: correction
+  description: Caller corrects twice before settling. Different identity.
+  user_turns:
+    - "Tuesday at 9 AM."
+    - "Actually Wednesday."
+    - "Wait no, Thursday at 9 AM."
+    - "Renee."
+    - "917-555-0144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      preferred_window: "thursday"
+    max_assistant_farewells: 1
+
+- id: correction_double_back_phrasing
+  category: correction
+  description: Double-correction with self-deprecating phrasing.
+  user_turns:
+    - "Friday at 3 PM."
+    - "Sorry, Monday."
+    - "Ugh, I'm a mess — Wednesday at 3 PM is what I meant."
+    - "Frank."
+    - "412-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      preferred_window: "wednesday"
+    max_assistant_farewells: 1
+
+- id: correction_misheard_phone_alt_values
+  category: correction
+  description: Phone-readback correction. Different identity than original.
+  user_turns:
+    - "Wednesday at 11 AM, Lex, 415-555-0166."
+    - "No, that's 0166, not 0156. 415-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      callback_number: "4155550166"
+    max_assistant_farewells: 1
+
+- id: correction_misheard_phone_phrasing
+  category: correction
+  description: Partial-phone correction (area code only).
+  user_turns:
+    - "Tuesday at 2 PM, Maxine, 213-555-0188."
+    - "Wait, area code is 213, not 312."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      callback_number: "2135550188"
+    max_assistant_farewells: 1
+
+- id: correction_AM_PM_swap_alt_values
+  category: correction
+  description: Caller corrects AM/PM. Different identity.
+  user_turns:
+    - "Friday at 9."
+    - "9 AM, not PM."
+    - "Esmeralda."
+    - "404-555-0102."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "esmeralda"
+    max_assistant_farewells: 1
+
+- id: correction_AM_PM_swap_phrasing
+  category: correction
+  description: AM/PM correction as 'I meant in the morning'.
+  user_turns:
+    - "Tuesday at 8."
+    - "I meant in the morning, not evening."
+    - "Cyrus."
+    - "917-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "cyrus"
+    max_assistant_farewells: 1
+
+- id: correction_late_day_change_alt_values
+  category: correction
+  description: Day-change just before booking. Different identity.
+  user_turns:
+    - "Friday at 11 AM."
+    - "Magnus."
+    - "612-555-0144."
+    - "Yes."
+    - "Wait — switch to Monday at 11 AM?"
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      preferred_window: "monday"
+    max_assistant_farewells: 1
+
+- id: correction_late_day_change_phrasing
+  category: correction
+  description: Late day-change phrased as 'before you save it'.
+  user_turns:
+    - "Wednesday at 2 PM."
+    - "Lina."
+    - "503-555-0188."
+    - "Yes."
+    - "Before you save it — make that Friday at 2 PM."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      preferred_window: "friday"
+    max_assistant_farewells: 1
+
+- id: correction_full_redo_alt_values
+  category: correction
+  description: Caller wants to start over. Different identity.
+  user_turns:
+    - "Tuesday at 1 PM, Greg."
+    - "Wait, can we start over?"
+    - "Wednesday at 4 PM, Gregory, 615-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "gregory"
+      callback_number: "6155550166"
+      preferred_window: "wednesday"
+    max_assistant_farewells: 1
+
+- id: correction_full_redo_phrasing
+  category: correction
+  description: Full-redo as 'scrap that, let me try again'.
+  user_turns:
+    - "Monday at 9 AM, Lou."
+    - "Scrap that, let me try again."
+    - "Friday at 11 AM, Louise, 215-555-0144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "louise"
+      callback_number: "2155550144"
+      preferred_window: "friday"
+    max_assistant_farewells: 1
+
+- id: caller_cancels_alt_values
+  category: cancel
+  description: Caller cancels mid-flow. Different opening phrase.
+  user_turns:
+    - "I'd like to make an appointment."
+    - "Actually never mind. I changed my mind."
+    - "Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+      - take_message
+    max_assistant_farewells: 1
+
+- id: caller_cancels_phrasing
+  category: cancel
+  description: Cancel phrased as 'forget it'.
+  user_turns:
+    - "I want to book a cleaning."
+    - "Forget it, I'll do it through the website."
+    - "Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_after_name_alt_values
+  category: cancel
+  description: Cancels after giving name. Different identity.
+  user_turns:
+    - "I want to book."
+    - "Marisol."
+    - "On second thought, I'll call back tomorrow."
+    - "Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+      - take_message
+    max_assistant_farewells: 1
+
+- id: cancel_after_name_phrasing
+  category: cancel
+  description: Cancel-after-name phrased as 'I have to go'.
+  user_turns:
+    - "I'd like an appointment."
+    - "Sergio."
+    - "I just realized I have to go — I'll call back."
+    - "Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_after_phone_alt_values
+  category: cancel
+  description: Cancels after giving phone. Different identity.
+  user_turns:
+    - "Booking please."
+    - "Mira."
+    - "623-555-0188."
+    - "Hmm, let me call back when I have my calendar."
+    - "Goodbye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_after_phone_phrasing
+  category: cancel
+  description: Caller interrupted by another call.
+  user_turns:
+    - "Want to book a cleaning."
+    - "Owen."
+    - "503-555-0166."
+    - "Sorry, hold on — I have to take this. I'll call back."
+    - "Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_immediate_alt_values
+  category: cancel
+  description: Cancels right after greeting.
+  user_turns:
+    - "Sorry, dialed by mistake."
+    - "Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+      - take_message
+    max_assistant_farewells: 1
+
+- id: cancel_immediate_phrasing
+  category: cancel
+  description: Immediate cancel as 'butt-dialed'.
+  user_turns:
+    - "Oh — I think I butt-dialed you. Sorry."
+    - "Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_silent_alt_values
+  category: cancel
+  description: Caller hard to hear.
+  user_turns:
+    - "..."
+    - "Hmm, can't hear you."
+    - "Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_silent_phrasing
+  category: cancel
+  description: Caller speaks but unintelligibly.
+  user_turns:
+    - "..."
+    - "(unintelligible)"
+    - "Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_changed_mind_about_dental_alt_values
+  category: cancel
+  description: Caller's pain went away.
+  user_turns:
+    - "I want to book a cleaning."
+    - "The pain went away. I'll wait. Thanks."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_changed_mind_about_dental_phrasing
+  category: cancel
+  description: Mind-change as 'I'll just deal with it'.
+  user_turns:
+    - "Cleaning please."
+    - "You know what, I'll just deal with it. Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_too_busy_alt_values
+  category: cancel
+  description: Caller's child interrupts.
+  user_turns:
+    - "Hi I want to book."
+    - "Friday at 11 AM, Donna, 213-555-0166."
+    - "Wait — kid's screaming, I have to go. I'll call back."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_too_busy_phrasing
+  category: cancel
+  description: Work emergency interrupts.
+  user_turns:
+    - "Need an appointment."
+    - "Tuesday at 2 PM, Jin, 415-555-0188."
+    - "Sorry — work emergency. Call you back."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_wrong_office_alt_values
+  category: cancel
+  description: Wrong-doctor mistake. Different doctor name.
+  user_turns:
+    - "Is this Dr. Patel's office?"
+    - "Sorry, wrong number. Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+      - take_message
+    max_assistant_farewells: 1
+
+- id: cancel_wrong_office_phrasing
+  category: cancel
+  description: Wanted a different specialty (orthodontist).
+  user_turns:
+    - "Is this the orthodontist?"
+    - "Oh — I want the orthodontist, not general dentist. Sorry, bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_was_just_asking_alt_values
+  category: cancel
+  description: Just info-seeking. Different question.
+  user_turns:
+    - "I just wanted to know if you accept walk-ins."
+    - "OK thanks. Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+      - take_message
+    max_assistant_farewells: 1
+
+- id: cancel_was_just_asking_phrasing
+  category: cancel
+  description: Just info — comparison shopping.
+  user_turns:
+    - "I'm comparison shopping for dentists."
+    - "Cool, thanks. Bye."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_not_today_alt_values
+  category: cancel
+  description: Defer to coordinate with partner.
+  user_turns:
+    - "I want to book a cleaning."
+    - "Need to coordinate with my partner first. I'll call back. Thanks!"
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: cancel_not_today_phrasing
+  category: cancel
+  description: Defer phrased as 'rain check'.
+  user_turns:
+    - "Booking, please."
+    - "Rain check — I'll call back next week."
+  expect:
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
