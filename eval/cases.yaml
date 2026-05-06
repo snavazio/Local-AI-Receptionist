@@ -3294,3 +3294,570 @@
     tool_must_not_be_called:
       - book_appointment_callback
     max_assistant_farewells: 1
+
+# ============================================================================
+# BATCH 4 — message + emergency variants (40 cases)
+# ============================================================================
+
+- id: leave_message_alt_values
+  category: message
+  description: Standard message-leaving with different identity and topic.
+  user_turns:
+    - "I'd like to leave a message for the doctor."
+    - "I have a question about a procedure I'm scheduled for next week."
+    - "Mira Patel, 408-555-0166."
+    - "No, that's it."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "mira"
+      callback_number: "4085550166"
+    tool_must_not_be_called:
+      - book_appointment_callback
+    max_assistant_farewells: 1
+
+- id: leave_message_phrasing
+  category: message
+  description: Message-leaving phrased as 'pass along' instead of 'leave a message'.
+  user_turns:
+    - "Can you pass something along to Dr. Smith?"
+    - "Tell him my mouth guard isn't fitting right."
+    - "Brett Howell, 720-555-0188."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "brett"
+      callback_number: "7205550188"
+    max_assistant_farewells: 1
+
+- id: message_billing_question_alt_values
+  category: message
+  description: Billing question. Different identity.
+  user_turns:
+    - "Can you take a message? I have a billing question."
+    - "There's a charge I don't understand from my last visit."
+    - "Quincy Stone, 312-555-0144."
+    - "No that's all."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "quincy"
+      callback_number: "3125550144"
+    max_assistant_farewells: 1
+
+- id: message_billing_question_phrasing
+  category: message
+  description: Billing message phrased as 'someone in billing'.
+  user_turns:
+    - "I need someone in billing to call me back."
+    - "I have an insurance discrepancy on my account."
+    - "Felicia Tan, 408-555-0179."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "felicia"
+      callback_number: "4085550179"
+    max_assistant_farewells: 1
+
+- id: message_xray_request_alt_values
+  category: message
+  description: X-ray transfer request. Different recipient doctor.
+  user_turns:
+    - "I'd like to leave a message."
+    - "Please ask Dr. Smith to send my x-rays to Dr. Anderson at Coastal Dental."
+    - "Cyril Banks, 213-555-0188."
+    - "No thanks."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "cyril"
+      callback_number: "2135550188"
+    max_assistant_farewells: 1
+
+- id: message_xray_request_phrasing
+  category: message
+  description: X-ray request phrased as 'transfer my records'.
+  user_turns:
+    - "I need to transfer my records to a new dentist."
+    - "Send my x-rays and chart to Dr. Vega at Pacific Family Dentistry."
+    - "Hilda Rosen, 916-555-0144."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "hilda"
+      callback_number: "9165550144"
+    max_assistant_farewells: 1
+
+- id: message_followup_alt_values
+  category: message
+  description: Post-procedure follow-up question. Different identity.
+  user_turns:
+    - "Can I leave a message?"
+    - "I had a root canal Monday and I have some lingering tenderness."
+    - "Jaime, 415-555-0166."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "jaime"
+      callback_number: "4155550166"
+    max_assistant_farewells: 1
+
+- id: message_followup_phrasing
+  category: message
+  description: Follow-up phrased as 'is this normal'.
+  user_turns:
+    - "Quick question for the doctor — is something normal?"
+    - "I had a crown placed and there's a pressure sensation. Just want to check if that's expected."
+    - "Talia Greene, 503-555-0107."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "talia"
+      callback_number: "5035550107"
+    max_assistant_farewells: 1
+
+- id: message_thank_you_alt_values
+  category: message
+  description: Thank-you message. Different recipient context.
+  user_turns:
+    - "Quick message please."
+    - "Thank Dr. Smith for fitting me in last minute. Really appreciate it."
+    - "Owen Frye, 802-555-0188."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "owen"
+      callback_number: "8025550188"
+    max_assistant_farewells: 1
+
+- id: message_thank_you_phrasing
+  category: message
+  description: Thanks phrased as compliment to staff.
+  user_turns:
+    - "Could you pass along a compliment?"
+    - "Tell the doctor and the hygienist they did a great job. My teeth feel amazing."
+    - "Kira Lin, 415-555-0103."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "kira"
+      callback_number: "4155550103"
+    max_assistant_farewells: 1
+
+- id: message_insurance_question_alt_values
+  category: message
+  description: Insurance verification. Different carrier.
+  user_turns:
+    - "I want to leave a message."
+    - "Please verify if you take Cigna PPO."
+    - "Trent Bishop, 215-555-0166."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "trent"
+      callback_number: "2155550166"
+    max_assistant_farewells: 1
+
+- id: message_insurance_question_phrasing
+  category: message
+  description: Insurance question phrased as 'in-network check'.
+  user_turns:
+    - "I'm trying to figure out if you're in-network for me."
+    - "I have United Healthcare — can someone check?"
+    - "Naomi Costa, 305-555-0188."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "naomi"
+      callback_number: "3055550188"
+    max_assistant_farewells: 1
+
+- id: message_reschedule_request_alt_values
+  category: message
+  description: Reschedule request via message. Different existing appt day.
+  user_turns:
+    - "I have an appointment Wednesday but need to reschedule."
+    - "Can someone call me back to set a new time?"
+    - "Drew Yamamoto, 415-555-0114."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "drew"
+      callback_number: "4155550114"
+    max_assistant_farewells: 1
+
+- id: message_reschedule_request_phrasing
+  category: message
+  description: Reschedule phrased as 'move my appointment'.
+  user_turns:
+    - "I need to move my appointment."
+    - "Can someone call me to find a new time?"
+    - "Penelope Marsh, 503-555-0125."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "penelope"
+      callback_number: "5035550125"
+    max_assistant_farewells: 1
+
+- id: message_referral_alt_values
+  category: message
+  description: Referral request. Different specialty.
+  user_turns:
+    - "Can I leave a message?"
+    - "I'd like a referral to a periodontist."
+    - "Aldous, 818-555-0188."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "aldous"
+      callback_number: "8185550188"
+    max_assistant_farewells: 1
+
+- id: message_referral_phrasing
+  category: message
+  description: Referral phrased as 'recommend a specialist'.
+  user_turns:
+    - "I want to leave a message for Dr. Smith."
+    - "I'd like him to recommend an oral surgeon for me."
+    - "Vera Fischer, 213-555-0166."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "vera"
+      callback_number: "2135550166"
+    max_assistant_farewells: 1
+
+- id: message_short_one_alt_values
+  category: message
+  description: Very brief message. Different topic.
+  user_turns:
+    - "Message please."
+    - "Tell him I'm running late for my Friday appointment."
+    - "Greg, 510-555-0188."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "greg"
+      callback_number: "5105550188"
+    max_assistant_farewells: 1
+
+- id: message_short_one_phrasing
+  category: message
+  description: Brief urgent-but-not-emergency message.
+  user_turns:
+    - "Quick message."
+    - "Bringing my x-rays from another office Friday."
+    - "Mick, 612-555-0144."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "mick"
+      callback_number: "6125550144"
+    max_assistant_farewells: 1
+
+- id: message_complex_alt_values
+  category: message
+  description: Long detailed message. Different topic.
+  user_turns:
+    - "I want to leave a message."
+    - "I'm scheduled for an extraction next week and have several questions about post-op care, sedation options, and whether my regular medications need to be paused. I'd like Dr. Smith to call when he has 10 minutes."
+    - "Adriana Reyes, 213-555-0188."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "adriana"
+      callback_number: "2135550188"
+    max_assistant_farewells: 1
+
+- id: message_complex_phrasing
+  category: message
+  description: Multi-question message phrased as bullet-point list.
+  user_turns:
+    - "Can I leave a detailed message?"
+    - "Please ask Dr. Smith — first, when can I drink coffee after my whitening; second, can I use my regular toothpaste; third, how long until I can eat berries again. Thanks."
+    - "Reggie Conway, 619-555-0177."
+    - "No."
+  expect:
+    tool_called: take_message
+    tool_args_contain:
+      caller_name: "reggie"
+      callback_number: "6195550177"
+    max_assistant_farewells: 1
+
+- id: emergency_escalation_alt_values
+  category: emergency
+  description: Severe pain + swelling. Different caller framing.
+  user_turns:
+    - "My jaw is swollen and the pain is unbearable."
+    - "I can barely open my mouth. What do I do?"
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "555"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_escalation_phrasing
+  category: emergency
+  description: Severe pain phrased as 'I'm in crisis'.
+  user_turns:
+    - "I'm in crisis here — my whole face is throbbing and the swelling is getting worse fast."
+    - "Help me, please."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_knocked_tooth_alt_values
+  category: emergency
+  description: Knocked-out tooth (different victim — adult, sports).
+  user_turns:
+    - "I just got hit in a hockey game and my front tooth is gone."
+    - "It's still in my hand. What do I do?"
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_knocked_tooth_phrasing
+  category: emergency
+  description: Knocked-out tooth phrased as 'tooth came out completely'.
+  user_turns:
+    - "My tooth came out completely after I tripped down stairs."
+    - "It's bleeding and I have the tooth here. Need help."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_bleeding_alt_values
+  category: emergency
+  description: Bleeding from gums won't stop. Different caller context.
+  user_turns:
+    - "My gum has been bleeding for over an hour and won't stop."
+    - "I'm getting lightheaded."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_bleeding_phrasing
+  category: emergency
+  description: Bleeding phrased as 'soaking through'.
+  user_turns:
+    - "I'm soaking through gauze every few minutes from a tooth that came loose this morning."
+    - "I'm scared this isn't slowing down."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_severe_pain_alt_values
+  category: emergency
+  description: Severe pain. Different caller phrasing.
+  user_turns:
+    - "I have the worst toothache of my life — sharp, constant, can't sleep."
+    - "Been like this for 18 hours."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_severe_pain_phrasing
+  category: emergency
+  description: Severe pain phrased as 'pain medication isn't touching it'.
+  user_turns:
+    - "I've been taking ibuprofen all day and the pain in my back tooth isn't even slowing down."
+    - "I'm at a 9 out of 10."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_swelling_alt_values
+  category: emergency
+  description: Significant swelling. Different victim (child).
+  user_turns:
+    - "My son's cheek is swollen and feels hot to the touch."
+    - "He's running a low fever too. Should I bring him in?"
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_swelling_phrasing
+  category: emergency
+  description: Swelling phrased as 'my face is changing shape'.
+  user_turns:
+    - "My face is literally changing shape — the right side has gotten huge in the last few hours."
+    - "I think I have an infection."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_after_surgery_alt_values
+  category: emergency
+  description: Post-op complication. Different procedure (implant).
+  user_turns:
+    - "I had an implant placed yesterday and now there's heavy bleeding and pus."
+    - "Is this normal?"
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_after_surgery_phrasing
+  category: emergency
+  description: Post-op phrased as 'something's not right'.
+  user_turns:
+    - "Something's not right after my extraction yesterday."
+    - "Lots of bleeding and now intense pain. What should I do?"
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_chipped_tooth_with_pain_alt_values
+  category: emergency
+  description: Cracked tooth with exposed nerve.
+  user_turns:
+    - "I just cracked a molar biting into something. The nerve is throbbing."
+    - "Sharp pain, can't close my mouth right."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_chipped_tooth_with_pain_phrasing
+  category: emergency
+  description: Cracked tooth phrased as 'snapped'.
+  user_turns:
+    - "I snapped a tooth and the inside is exposed."
+    - "Really intense sharp pain whenever I breathe in."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_facial_trauma_alt_values
+  category: emergency
+  description: Facial trauma — bicycle crash. Different injury context.
+  user_turns:
+    - "I crashed into a parked car on my bike. My mouth is bleeding badly and I can't tell if a tooth is loose."
+    - "Should I come in?"
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_facial_trauma_phrasing
+  category: emergency
+  description: Trauma phrased as 'fell on my face'.
+  user_turns:
+    - "I fell on my face down the basement stairs."
+    - "Two of my front teeth feel loose and there's blood everywhere."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_abscess_alt_values
+  category: emergency
+  description: Abscess with worsening pus and swelling.
+  user_turns:
+    - "I have a huge bump on my gum that's leaking pus, and my jaw aches."
+    - "It's been bad for three days but now I have a fever too."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_abscess_phrasing
+  category: emergency
+  description: Abscess phrased as 'something burst in my mouth'.
+  user_turns:
+    - "Something burst in my mouth — there's a foul taste and a lot of pressure released."
+    - "My face is still really swollen though."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_clear_request_alt_values
+  category: emergency
+  description: Caller explicitly says 'emergency'. Different injury.
+  user_turns:
+    - "This is a dental emergency."
+    - "I dislodged a crown and I'm bleeding heavily."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
+
+- id: emergency_clear_request_phrasing
+  category: emergency
+  description: Explicit emergency phrased as 'this is urgent'.
+  user_turns:
+    - "This is urgent — I need help right away."
+    - "My tooth was knocked sideways and there's a lot of bleeding."
+  expect:
+    tool_called: escalate_emergency
+    assistant_must_say_any:
+      - "five five five"
+      - "emergency"
+    max_assistant_farewells: 1
