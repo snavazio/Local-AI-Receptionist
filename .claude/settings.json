@@ -3,14 +3,20 @@
     "allow": [
       "Bash(curl -s http://localhost:11434/*)",
       "Bash(nvidia-smi *)",
-      "Bash(.venv/bin/python -m pytest*)",
-      "Bash(.venv/bin/python eval/run_eval.py*)",
-      "Bash(.venv/bin/python eval/watch.py*)",
-      "Bash(.venv/bin/python eval/trend.py*)",
-      "Bash(.venv/bin/python eval/improve.py*)",
+      "Bash(.venv/bin/python -m pytest)",
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(.venv/bin/python eval/run_eval.py *)",
+      "Bash(.venv/bin/python eval/watch.py)",
+      "Bash(.venv/bin/python eval/watch.py *)",
+      "Bash(.venv/bin/python eval/trend.py)",
+      "Bash(.venv/bin/python eval/trend.py *)",
+      "Bash(.venv/bin/python eval/improve.py)",
+      "Bash(.venv/bin/python eval/improve.py *)",
       "Read(/tmp/**)",
       "Read(/home/snavazio/.claude/**)",
-      "Read(/home/snavazio/projects/receptionist/**)"
+      "Read(/home/snavazio/projects/receptionist/**)",
+      "Edit(/home/snavazio/projects/receptionist/**)",
+      "Write(/home/snavazio/projects/receptionist/**)"
     ]
   }
 }
