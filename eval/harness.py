@@ -311,6 +311,8 @@ class CaseResult:
     tool_calls: list[ToolCallRecord]
     transcript: list[dict]  # raw OpenAI-format messages for debugging
     llm_call_ms: list[int] = field(default_factory=list)  # per-LLM-request wall time
+    prompt_tokens: int = 0   # cumulative input tokens across all LLM calls
+    completion_tokens: int = 0  # cumulative output tokens
 
 
 async def run_case_async(
@@ -333,6 +335,8 @@ async def run_case_async(
     captured_turns = [Turn(role="assistant", text=GREETING)]
     captured_tool_calls: list[ToolCallRecord] = []
     llm_call_ms: list[int] = []
+    prompt_tokens = 0
+    completion_tokens = 0
     farewell_spoken = False
 
     for user_text in user_turns:
@@ -348,6 +352,9 @@ async def run_case_async(
                 temperature=0,
             )
             llm_call_ms.append(int((time.monotonic() - t0) * 1000))
+            if getattr(resp, "usage", None):
+                prompt_tokens += resp.usage.prompt_tokens or 0
+                completion_tokens += resp.usage.completion_tokens or 0
             msg = resp.choices[0].message
 
             assistant_msg: dict = {"role": "assistant"}
@@ -413,6 +420,8 @@ async def run_case_async(
         tool_calls=captured_tool_calls,
         transcript=messages,
         llm_call_ms=llm_call_ms,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
     )
 
 
@@ -460,6 +469,8 @@ def run_case(case_id: str, user_turns: list[str], max_tool_loops: int = 5) -> Ca
     captured_turns = [Turn(role="assistant", text=GREETING)]
     captured_tool_calls: list[ToolCallRecord] = []
     llm_call_ms: list[int] = []
+    prompt_tokens = 0
+    completion_tokens = 0
     farewell_spoken = False  # latches once per call (mirrors prod FarewellDeduper)
 
     for user_text in user_turns:
@@ -475,6 +486,9 @@ def run_case(case_id: str, user_turns: list[str], max_tool_loops: int = 5) -> Ca
                 temperature=0,
             )
             llm_call_ms.append(int((time.monotonic() - t0) * 1000))
+            if getattr(resp, "usage", None):
+                prompt_tokens += resp.usage.prompt_tokens or 0
+                completion_tokens += resp.usage.completion_tokens or 0
             msg = resp.choices[0].message
 
             # Record assistant message in OpenAI format for the next round.
@@ -543,4 +557,6 @@ def run_case(case_id: str, user_turns: list[str], max_tool_loops: int = 5) -> Ca
         tool_calls=captured_tool_calls,
         transcript=messages,
         llm_call_ms=llm_call_ms,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
     )

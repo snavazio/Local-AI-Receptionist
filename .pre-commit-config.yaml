@@ -22,3 +22,10 @@ repos:
         entry: .venv/bin/python -c "import sys, ast; [ast.parse(open(f).read()) for f in sys.argv[1:]]"
         language: system
         types: [python]
+
+      - id: cases-yaml-valid
+        name: eval/cases.yaml parses cleanly
+        entry: .venv/bin/python -c "import yaml; cases=yaml.safe_load(open('eval/cases.yaml')); ids=[c['id'] for c in cases]; dups=[x for x in set(ids) if ids.count(x)>1]; assert not dups, f'duplicate ids: {dups}'; assert all(c.get('description','').strip() for c in cases), 'cases missing description field'"
+        language: system
+        pass_filenames: false
+        files: ^eval/cases\.yaml$

@@ -202,6 +202,8 @@ def summarize_eval(result: dict) -> dict:
         "by_case": by_case,
         "by_category": by_category,
         "wall_s": result.get("wall_s"),
+        "total_prompt_tokens": result.get("total_prompt_tokens", 0),
+        "total_completion_tokens": result.get("total_completion_tokens", 0),
         "latency": {
             "n": len(latencies),
             "p50": percentile(latencies, 50),
@@ -365,6 +367,12 @@ def render_report(
     L.append(f"- **Unit tests**: {unit['passed']} passed, {unit['failed']} failed (exit {unit['exit_code']})")
     lat = eval_summary["latency"]
     L.append(f"- **Latency**: p50 {lat['p50']} ms · p95 {lat['p95']} ms · p99 {lat['p99']} ms · max {lat['max']} ms")
+    pt = eval_summary.get("total_prompt_tokens", 0) or 0
+    ct = eval_summary.get("total_completion_tokens", 0) or 0
+    if pt or ct:
+        ncalls = lat.get("n", 0) or 1
+        L.append(f"- **Tokens**: {pt:,} prompt + {ct:,} completion = {pt+ct:,} total · "
+                 f"avg {pt//ncalls} prompt / {ct//ncalls} completion per call")
     if eval_summary.get("wall_s"):
         L.append(f"- **Wall**: {eval_summary['wall_s']:.0f}s")
     L.append(f"- **Git**: `{git['branch']}` @ `{git['commit']}` — _{git['subject']}_" +

@@ -192,6 +192,10 @@ def render_report(rows: list[dict], latency_ms: list[int] | None = None,
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--case", help="Run a single case by id")
+    parser.add_argument(
+        "--cases",
+        help="Run multiple cases by id (comma-separated). Example: --cases happy_path_basic,emergency_bleeding,correction_mid_flow",
+    )
     parser.add_argument("--category", help="Run only cases in this category")
     parser.add_argument(
         "--shard",
@@ -231,6 +235,15 @@ def main() -> int:
         cases = [c for c in cases if c["id"] == args.case]
         if not cases:
             print(f"No case with id {args.case!r}", file=sys.stderr)
+            return 2
+    if args.cases:
+        wanted = {x.strip() for x in args.cases.split(",") if x.strip()}
+        cases = [c for c in cases if c["id"] in wanted]
+        missing = wanted - {c["id"] for c in cases}
+        if missing:
+            print(f"Warning: case ids not found: {sorted(missing)}", file=sys.stderr)
+        if not cases:
+            print(f"No matching cases for --cases {args.cases!r}", file=sys.stderr)
             return 2
     if args.category:
         cases = [c for c in cases if c.get("category") == args.category]
@@ -308,6 +321,8 @@ def main() -> int:
                     for tc in result.tool_calls
                 ],
                 "llm_call_ms": result.llm_call_ms,
+                "prompt_tokens": getattr(result, "prompt_tokens", 0),
+                "completion_tokens": getattr(result, "completion_tokens", 0),
             })
 
     if args.json_out:
@@ -315,6 +330,8 @@ def main() -> int:
             "rows": rows,
             "llm_call_ms": all_llm_call_ms,
             "wall_s": wall_s,
+            "total_prompt_tokens": sum(r.get("prompt_tokens", 0) for r in rows),
+            "total_completion_tokens": sum(r.get("completion_tokens", 0) for r in rows),
         }))
         return 0 if all(r["passed"] for r in rows) else 1
 
