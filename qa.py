@@ -53,6 +53,13 @@ RUNS_DIR = ROOT / "qa_runs"
 BASELINE = EVAL_DIR / "baseline.json"
 HISTORY = EVAL_DIR / "history.jsonl"
 
+# Always use the project's venv python for subprocesses, even if the user
+# launched qa.py with a different Python (e.g. conda's `python`). The venv
+# is where pytest, pyyaml, openai, etc. live; sys.executable can point at
+# an env that doesn't have these packages.
+VENV_PY = ROOT / ".venv" / "bin" / "python"
+PY = str(VENV_PY) if VENV_PY.exists() else sys.executable
+
 
 # ============================================================================
 # Helpers
@@ -82,29 +89,33 @@ def sparkline(values: list[float]) -> str:
 
 def run_unit_tests() -> dict:
     """Returns {passed: int, failed: int, total: int, output: str}."""
-    print("[qa] running unit tests...", flush=True)
+    print(f"[qa] running unit tests (python: {PY})...", flush=True)
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "tests/", "-q", "--tb=short"],
+        [PY, "-m", "pytest", "tests/", "-q", "--tb=short"],
         cwd=ROOT, capture_output=True, text=True,
     )
     out = proc.stdout + proc.stderr
     # Parse the pytest summary line e.g. "121 passed in 1.62s"
+    import re
     passed = 0
     failed = 0
+    parsed = False
     for line in out.splitlines():
-        if "passed" in line and "in " in line and "s" in line:
-            # rough parse
-            for part in line.replace(",", " ").split():
-                if part.isdigit():
-                    pass  # placeholder
-            import re
-            m = re.search(r"(\d+) passed", line)
-            if m:
-                passed = int(m.group(1))
-            m = re.search(r"(\d+) failed", line)
-            if m:
-                failed = int(m.group(1))
+        m = re.search(r"(\d+) passed", line)
+        if m:
+            passed = int(m.group(1))
+            parsed = True
+        m = re.search(r"(\d+) failed", line)
+        if m:
+            failed = int(m.group(1))
+            parsed = True
+        if parsed and ("in " in line and "s" in line):
             break
+    if not parsed:
+        # pytest didn't emit a summary line — likely import error / missing pytest
+        print(f"[qa] WARNING: pytest produced no summary line. Exit code {proc.returncode}.", flush=True)
+        if proc.returncode != 0:
+            print(f"[qa] First 500 chars of pytest output:\n{out[:500]}", flush=True)
     return {
         "passed": passed,
         "failed": failed,
@@ -122,7 +133,7 @@ def run_full_eval(concurrency: int, model: str | None) -> dict:
         json_path = Path(f.name)
     try:
         cmd = [
-            sys.executable,
+            PY,
             str(EVAL_DIR / "run_eval.py"),
             "--concurrency", str(concurrency),
             "--json-out", str(json_path),
