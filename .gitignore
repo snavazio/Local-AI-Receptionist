@@ -180,3 +180,6 @@ eval/regression_report.md
 
 # Audio fixtures (regenerate via tools/gen_audio_fixtures.py)
 tests/audio_fixtures/
+
+# Claude Code per-machine local overrides
+.claude/settings.local.json
