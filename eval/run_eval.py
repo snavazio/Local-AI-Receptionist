@@ -18,7 +18,22 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent))
 import asyncio
-from harness import CaseResult, run_case, _extract_phone_digits, run_cases_concurrent
+from harness import CaseResult, _extract_phone_digits
+from harness import run_case as _run_case_freeform
+from harness import run_cases_concurrent as _run_cases_concurrent_freeform
+
+# FSM variant — opt-in via --flows
+def _run_case_flows(*a, **kw):
+    from harness_flows import run_case as _f
+    return _f(*a, **kw)
+
+def _run_cases_concurrent_flows(*a, **kw):
+    from harness_flows import run_cases_concurrent as _f
+    return _f(*a, **kw)
+
+# Resolved at parse-time below
+run_case = _run_case_freeform
+run_cases_concurrent = _run_cases_concurrent_freeform
 
 
 FAREWELL_RE = re.compile(
@@ -236,12 +251,44 @@ def main() -> int:
         "--report",
         default=str(Path(__file__).parent / "report.md"),
     )
+    parser.add_argument(
+        "--flows",
+        action="store_true",
+        help="Use the FSM-driven harness (harness_flows.py) instead of the "
+             "free-form bot.py harness. Tests bot_flows.py-style behavior.",
+    )
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Use the deterministic-extractor harness "
+             "(harness_deterministic.py): Python regex/heuristics extract "
+             "slots and drive the state machine; LLM only generates the "
+             "response prose. Eliminates 'LLM lies about completing actions'.",
+    )
     args = parser.parse_args()
 
     # Propagate --model to harness via env var (subprocesses inherit).
     if args.model:
         import os as _os
         _os.environ["EVAL_MODEL"] = args.model
+
+    # Switch the harness implementation if --flows or --deterministic.
+    if args.flows and args.deterministic:
+        sys.exit("--flows and --deterministic are mutually exclusive")
+    if args.flows or args.deterministic:
+        global run_case, run_cases_concurrent
+        if args.flows:
+            run_case = _run_case_flows
+            run_cases_concurrent = _run_cases_concurrent_flows
+            import os as _os
+            _os.environ["EVAL_FLOWS"] = "1"
+        else:
+            from harness_deterministic import run_case as _f1
+            from harness_deterministic import run_cases_concurrent as _f2
+            run_case = _f1
+            run_cases_concurrent = _f2
+            import os as _os
+            _os.environ["EVAL_DETERMINISTIC"] = "1"
 
     cases = yaml.safe_load(Path(args.cases_file).read_text())
     if args.case:
