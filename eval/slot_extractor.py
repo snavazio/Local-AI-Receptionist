@@ -20,21 +20,46 @@ from harness import _extract_phone_digits  # already handles digits + word-form
 # ──────────────── intent classifier ────────────────────────────────
 
 _EMERGENCY_KEYWORDS = (
-    # Trauma
+    # Trauma — multi-word so we don't fire on "tooth" alone
     "knocked out", "knocked-out", "knock out my tooth", "broken tooth",
-    "broke a tooth", "broke my tooth", "trauma", "accident",
-    # Bleeding
-    "bleeding", "blood", "won't stop bleeding", "can't stop the bleeding",
-    "can't stop",
-    # Severe pain phrasings (real callers use many)
-    "severe pain", "extreme pain", "horrible pain", "intense pain",
-    "really bad pain", "terrible pain", "throbbing pain", "excruciating",
-    "unbearable", "agonizing pain", "horrible throbbing", "can't sleep",
-    # Swelling / abscess
-    "swelling", "swollen", "facial swelling", "abscess",
+    "broke a tooth", "broke my tooth",
+    # Natural panicked-parent phrasings ("tooth came out", "tooth fell out")
+    "tooth came out", "tooth fell out", "tooth got knocked", "tooth knocked out",
+    "tooth is loose", "tooth out",
+    "hit in the face", "fell on his face", "fell on her face",
+    # Bleeding — only the unambiguous escalations
+    "won't stop bleeding", "can't stop the bleeding", "lots of blood",
+    "bleeding heavily", "heavy bleeding",
+    # Severe pain phrasings — qualifier required, no bare "pain"
+    "severe pain", "extreme pain", "intense pain", "really bad pain",
+    "terrible pain", "excruciating", "unbearable pain", "agonizing pain",
+    "horrible throbbing pain", "throbbing pain that won't",
+    # Swelling — qualified
+    "facial swelling", "abscess", "swelling in my face",
     # Direct
-    "this is an emergency", "dental emergency", "urgent",
+    "this is an emergency", "dental emergency", "it's urgent",
 )
+
+# Negation patterns — when these appear before an emergency keyword
+# (within ~30 chars), the keyword should be ignored. Catches "no pain,
+# no bleeding", "not bleeding anymore", "doesn't hurt but...".
+_NEGATION_RE = re.compile(
+    r"\b(no|not|don'?t|doesn'?t|isn'?t|aren'?t|stopped|stops|"
+    r"didn'?t|hasn'?t|haven'?t|never)\b", re.IGNORECASE)
+
+
+def _is_negated(text: str, keyword: str) -> bool:
+    """True if `keyword` is preceded by a negation marker within 30 chars."""
+    t = text.lower()
+    kw = keyword.lower()
+    idx = t.find(kw)
+    while idx != -1:
+        # Look at the 30 chars BEFORE the keyword for a negation marker.
+        window = t[max(0, idx - 30):idx]
+        if _NEGATION_RE.search(window):
+            return True
+        idx = t.find(kw, idx + 1)
+    return False
 _APPOINTMENT_KEYWORDS = (
     "book", "schedule", "make an appointment", "set up an appointment",
     "come in for", "appointment for", "cleaning", "checkup", "exam",
@@ -88,13 +113,12 @@ def classify_intent(text: str) -> str | None:
     """Return 'appointment' | 'message' | 'emergency' | None.
 
     Priority: emergency > appointment > message > topical-message.
-    Appointment beats message when BOTH appear in the same utterance —
-    e.g. "book a cleaning AND leave a message about insurance" — since
-    the appointment is the more structured, higher-value action and
-    a message can be tacked into the appointment record."""
+    Emergency requires an UNNEGATED keyword — 'no pain, no bleeding'
+    must not trigger. Appointment beats message when both appear."""
     t = (text or "").lower()
-    if any(kw in t for kw in _EMERGENCY_KEYWORDS):
-        return "emergency"
+    for kw in _EMERGENCY_KEYWORDS:
+        if kw in t and not _is_negated(t, kw):
+            return "emergency"
     has_appt = any(kw in t for kw in _APPOINTMENT_KEYWORDS)
     has_msg = any(kw in t for kw in _MESSAGE_KEYWORDS)
     has_topical = any(kw in t for kw in _TOPICAL_MESSAGE_KEYWORDS)
@@ -139,6 +163,12 @@ _NAME_BLOCKLIST = {
     # First words that lead to false "I'm X" / "It's X" matches
     "been", "having", "feeling", "experiencing", "trying", "calling",
     "wondering", "thinking", "looking",
+    # Adjectives / verbs that surfaced as false-positive 1-word names
+    "flexible", "scheduled", "switching", "fine", "good", "bad",
+    "available", "busy", "free", "open", "closed", "ready",
+    "scrap", "scrap that", "wait", "actually", "instead",
+    "twelve-thirty", "twelve thirty",
+    "sure", "which",
     # Pronouns / fillers
     "you", "me", "him", "her", "them", "us", "we", "they",
     # Prepositions
@@ -165,29 +195,45 @@ def _clean_name(raw: str) -> str | None:
     return " ".join(parts[:3])
 
 
+_DIGIT_WORDS = {"zero", "oh", "o", "one", "two", "three", "four", "five",
+                "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+                "thirteen", "fourteen", "fifteen", "twenty", "thirty",
+                "hundred", "thousand"}
+
+
 def _looks_like_name_chunk(chunk: str) -> str | None:
-    """Heuristic: a chunk looks like a name if it's 1-3 alphabetic words
-    AND the first word isn't in the blocklist AND it doesn't look like
-    a time. Returns the cleaned name or None."""
+    """Heuristic: a chunk looks like a name if it's 1-3 alphabetic words,
+    no word is in the blocklist, none look like time/digit-words, and the
+    chunk doesn't carry other structural data."""
     chunk = chunk.strip().rstrip(".,;:!?'\"")
     if not chunk:
         return None
     # Reject if the chunk is a time expression like "Three PM", "Ten AM",
-    # "Noon", "Midnight", "3:30 pm".
+    # "Noon", "Midnight", "3:30 pm", or contains a day name.
     if _find_specific_time(chunk) is not None:
+        return None
+    if _find_day(chunk) is not None:
         return None
     parts = chunk.split()
     if not parts or len(parts) > 3:
         return None
     # All parts must be letters only (allow apostrophe + hyphen)
+    cleaned_words = []
     for p in parts:
         clean_p = p.strip(".,;:!?'\"")
         if not clean_p or not all(c.isalpha() or c in "'-" for c in clean_p):
             return None
-    first = parts[0].strip(".,;:!?'\"").lower()
-    if first in _NAME_BLOCKLIST:
+        cleaned_words.append(clean_p)
+    # If EVERY word is a digit-word ("Three one zero"), this is probably
+    # someone reading a phone number, not a name.
+    if all(w.lower() in _DIGIT_WORDS for w in cleaned_words):
         return None
-    return " ".join(p.strip(".,;:!?'\"") for p in parts)
+    # ANY word in blocklist disqualifies the chunk (was: only first word).
+    # This catches "not sure which", "twelve-thirty works", etc.
+    for w in cleaned_words:
+        if w.lower() in _NAME_BLOCKLIST:
+            return None
+    return " ".join(cleaned_words)
 
 
 def extract_name(text: str, *, in_name_state: bool = False) -> str | None:

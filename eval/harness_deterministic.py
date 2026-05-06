@@ -111,10 +111,19 @@ def advance(state: dict, user_text: str, prior_user_turns: list[str]) -> dict:
         return state
 
     # ── opportunistic extraction (every turn, regardless of state) ──
+    # Intent: set if unset. Also upgrade message → appointment if the
+    # caller now uses an explicit appointment keyword ("book", "schedule",
+    # "appointment", "checkup", "cleaning"). This guards against the LLM
+    # rescue (or a too-eager initial classification) locking in 'message'
+    # when the caller's later turns clearly want a booking.
+    new_ic = classify_intent(scan_text)
     if not state.get("intent"):
-        ic = classify_intent(scan_text)
-        if ic:
-            state["intent"] = ic
+        if new_ic:
+            state["intent"] = new_ic
+    elif state["intent"] == "message" and new_ic == "appointment":
+        state["intent"] = "appointment"
+        # Drop message-only slot if it had been set
+        state.pop("message", None)
 
     if not state.get("callback_number"):
         ph = extract_phone(scan_text)
@@ -135,7 +144,32 @@ def advance(state: dict, user_text: str, prior_user_turns: list[str]) -> dict:
         if nm:
             state["caller_name"] = nm
 
+    # ── front-loaded-name fallback: if the turn contains BOTH a phone
+    # (or day) AND a comma, try to find a chunk that looks like a name.
+    # Catches "I'd like to book Tuesday at 2 PM. Steve, 201-388-2149."
+    # where "Steve" is the name and the rest is data.
+    if not state.get("caller_name") and ("," in scan_text or "." in scan_text):
+        carries_data = (extract_phone(scan_text) is not None
+                        or _find_day(scan_text) is not None
+                        or _find_specific_time(scan_text) is not None)
+        if carries_data:
+            # Split on commas AND periods so "...2 PM. Steve, 201..." becomes
+            # ["...", "2 PM", " Steve", " 201-388-2149", ""].
+            import re as _re
+            chunks = _re.split(r"[,.]\s*", scan_text)
+            for chunk in chunks:
+                from slot_extractor import _looks_like_name_chunk
+                cand = _looks_like_name_chunk(chunk)
+                if cand:
+                    state["caller_name"] = cand
+                    break
+
     # ── state-specific fallbacks (whole-turn-as-name, message-topic) ──
+    # The strengthened _looks_like_name_chunk (blocklist with adjectives
+    # /verbs, reject all-digit-words, reject day-containing) is the
+    # primary defense against false positives — the bot-asked-for-name
+    # gate proved too strict on terse responses ("Tom." after a prose
+    # that didn't include the literal word 'name').
     if s == S_NAME and not state.get("caller_name"):
         nm = extract_name(scan_text, in_name_state=True)
         if nm:
@@ -283,11 +317,9 @@ _RESCUE_PROMPTS = {
     S_MESSAGE: ("Read the conversation. What is the message / topic the caller "
                 "wants forwarded? Reply with ONLY a one-line summary, or "
                 "'unknown'."),
-    S_TRIAGE: ("Read the conversation. Is this caller (a) booking an "
-               "appointment, (b) leaving a message / asking a question the "
-               "front desk should follow up on, or (c) describing a dental "
-               "emergency? Reply with ONLY one word: 'appointment', "
-               "'message', or 'emergency' — or 'unknown'."),
+    # Note: no TRIAGE rescue. If the caller hasn't yet stated their intent,
+    # the right move is to keep asking — not to have the LLM guess. Guessing
+    # locks in the wrong intent and later "I'd like to book" can't override.
 }
 
 
@@ -403,6 +435,7 @@ async def run_case_async(case_id: str, user_turns: list[str],
     farewell_spoken = False
     prior_user_turns: list[str] = []
     stuck_at: dict[str, int] = {}   # node_key -> turns spent here w/o progress
+    last_bot_prose = GREETING       # to detect "did the bot just ask for X?"
 
     for user_text in user_turns:
         transcript.append({"role": "user", "content": user_text})
@@ -410,6 +443,18 @@ async def run_case_async(case_id: str, user_turns: list[str],
 
         # Record latest user text so state_prompt can detect "real person" etc.
         state["_last_user_text"] = user_text
+
+        # Did the bot's previous prose explicitly ask for the caller's name?
+        # Used to gate the "whole-turn looks like a name" fallback so it
+        # doesn't grab "flexible" / "Twelve-thirty works" / etc. when the
+        # bot was actually asking about something else.
+        prose = last_bot_prose.lower()
+        state["_asked_for_name"] = (
+            ("name" in prose and ("your" in prose or "may i" in prose
+                                   or "what's" in prose or "what is" in prose
+                                   or "who" in prose or "tell me" in prose
+                                   or "could i" in prose or "can i" in prose))
+        )
 
         # 1) Update state from the deterministic extractor.
         prev_state_key = state["state"]
@@ -450,6 +495,7 @@ async def run_case_async(case_id: str, user_turns: list[str],
             farewell_spoken = True
         transcript.append({"role": "assistant", "content": reply})
         captured_turns.append(Turn(role="assistant", text=reply))
+        last_bot_prose = reply or last_bot_prose
 
         if state["state"] == S_END:
             break
