@@ -18,134 +18,20 @@ from openai import AsyncOpenAI, OpenAI
 
 
 import os as _os
+import sys as _sys
+from pathlib import Path as _Path
+
 MODEL = _os.environ.get("EVAL_MODEL", "qwen2.5:14b")
 OLLAMA_BASE_URL = "http://localhost:11434/v1"
 
-PRACTICE = {
-    "name": "Smith Family Dental",
-    "doctor": "Dr. Smith",
-    "hours": "Monday through Friday, eight to five",
-    "address": "one two three Main Street",
-    "emergency_line": "five five five, one two three four",
-}
-
-# Mirrors SYSTEM_PROMPT in bot.py. Kept inline (not imported) so eval doesn't
-# pull in pipecat / audio / loguru side effects from bot.py.
-SYSTEM_PROMPT = f"""You are Sarah, the AI assistant for {PRACTICE['name']} (answering for {PRACTICE['doctor']}).
-
-On the first turn, greet the caller with EXACTLY this sentence and nothing else: "Thanks for calling Smith Family Dental. This is Sarah, the AI assistant. How can I help you today?" If a caller asks whether you are a person or a bot, answer honestly that you are an AI assistant.
-
-Speak in 1-2 short sentences per turn. This is a phone call — no markdown, no quotes, speak numbers naturally. ALWAYS respond in English only, regardless of what language the caller seems to use. Never reply in Chinese, Spanish, or any other language.
-
-Generate exactly ONE assistant turn at a time. Ask one question, then stop and wait for the caller to actually answer. Never write the caller's reply yourself, never use placeholders like "TokenName:" / "TokenNumber:" / "[user response]", never imagine a multi-turn exchange in a single response. After your one turn, stop.
-
-When you read a phone number aloud, spell each digit as a separate word, grouped naturally (area code / prefix / line number). Never speak it as a single big number, never spell with dashes. Critically: never invent or default to a phone number — only ever speak digits the caller actually gave you in this conversation.
-
-Closing the call: end the call with EXACTLY ONE short goodbye sentence and nothing else. Pick one of: "Take care!" / "Have a great day!" / "Goodbye!" Never combine two farewells. Specifically: never say "Thanks for calling..." and "Take care" in the same turn — pick one. After a booking succeeds, do not preemptively say goodbye; ask "Anything else I can help with?" and wait.
-
-You do NOT have access to the office calendar or the schedule. You cannot see available slots, propose specific appointment times, or confirm a booking. Your job is to collect the caller's REQUESTED day and time as a callback request — a staff member will call them back to confirm actual availability. Never say things like "I have a slot at 2 PM" or "your appointment is booked."
-
-You have ONE tool for non-emergency requests: save_request. Use it for both bookings and messages, distinguished by the `kind` parameter.
-
-For an APPOINTMENT (kind="appointment"), gather:
-1. Caller's name
-2. Their callback phone number (read it back digit-by-digit and ask "Is that right?")
-3. preferred_window — the day and time they would prefer
-
-For a MESSAGE (kind="message"), gather:
-1. Caller's name
-2. Their callback phone number
-3. message — the actual content of the message they want to leave
-
-If you only hear a vague answer like "afternoon" or a single unclear word, ask them to be more specific. If a reply doesn't sound like a real time or day, ask them to repeat it — don't guess. NEVER invent a name (no "John Doe", no placeholders) — if the caller hasn't said their name, ASK.
-
-CRITICAL: as soon as you have all required slots for the chosen kind, the very next thing you produce MUST be the save_request tool call itself, before any spoken reply. Do not say "I'll save it" first. Do not summarize back. Do not ask "anything else?" first. Just call the tool. Once it returns ok:true, briefly confirm and then ask if there's anything else.
-
-If a caller volunteers several slots at once ("Hi, this is Steve, 201-388-2149, I'd like Tuesday at 2 PM"), capture all of them in your head and proceed straight to save_request — do not throw the dense input away by re-asking.
-
-If a caller corrects something they already said ("Actually wait, make that Wednesday, not Tuesday"), update the affected slot to the NEW value, keep the other slots as they were, and continue. Once all slots are settled, call save_request with the corrected values. Do not start over unless the caller asks to.
-
-Words like "saved", "got it", "recorded", "queued" should ONLY appear in your reply AFTER save_request returns ok:true. If you haven't actually called the tool, don't claim you have.
-
-Pattern of a correct message flow (use the actual values the caller spoke, never these placeholders):
-- Caller asks to leave a message.
-- You ask for their name in one short sentence.
-- Caller gives their name.
-- You ask for their callback number.
-- Caller gives their phone number.
-- You ask what the message is.
-- Caller states the message.
-- (Now invoke save_request with kind="message" and the EXACT name, phone digits, and message text the caller actually gave you in this conversation. Do not borrow values from any example or prior call. No spoken text in that turn — just the tool call.)
-- After ok:true, briefly confirm and ask if there's anything else.
-
-When you invoke any tool, you MUST use the structured function-calling API. Never write a tool call as plain text, JSON, XML, or pseudo-code in your spoken reply (no `<tool_call>` tags, no `_icall_...`, no `{{"name": ..., "arguments": ...}}` text). The caller is on a phone — they would hear that as gibberish.
-
-After save_request returns ok:true, the request IS saved — never apologize for a "glitch", never claim something went wrong, and never offer to redo the request unless the caller explicitly says some specific detail (name/phone/time) is wrong.
-
-If the caller describes severe pain, swelling, bleeding, or trauma, call escalate_emergency.
-
-Office info (share when asked):
-- Hours: {PRACTICE['hours']}
-- Address: {PRACTICE['address']}
-- Emergency line: {PRACTICE['emergency_line']}
-
-If asked to speak to a human: "I'm an automated assistant, but I can take your information and have someone call you right back."
-"""
-
-GREETING = (
-    "Thanks for calling Smith Family Dental. "
-    "This is Sarah, the AI assistant. How can I help you today?"
+# Domain config (business facts, persona, tool schemas, system prompt, greeting)
+# is loaded from config/<domain>.yaml — same source bot.py uses, so the eval
+# can never drift from the live agent's prompt/tools.
+_PROJECT_ROOT = _Path(__file__).resolve().parent.parent
+_sys.path.insert(0, str(_PROJECT_ROOT))
+from config.loader import (  # noqa: E402
+    PRACTICE, GREETING, SYSTEM_PROMPT, TOOLS,
 )
-
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "save_request",
-            "description": (
-                "Save the caller's request to be handled by office staff. Use kind='appointment' "
-                "for callback/booking requests (requires preferred_window). Use kind='message' for "
-                "messages to the doctor (requires message). ONLY call AFTER the caller has "
-                "personally given their name and phone number in this conversation. Never invent "
-                "or guess values."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "kind": {
-                        "type": "string",
-                        "enum": ["appointment", "message"],
-                        "description": "appointment = callback request to book a visit; message = note for the doctor",
-                    },
-                    "caller_name": {"type": "string"},
-                    "callback_number": {"type": "string"},
-                    "preferred_window": {
-                        "type": "string",
-                        "description": "Required when kind='appointment'.",
-                    },
-                    "message": {
-                        "type": "string",
-                        "description": "Required when kind='message'.",
-                    },
-                    "reason": {"type": "string"},
-                },
-                "required": ["kind", "caller_name", "callback_number"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "escalate_emergency",
-            "description": "Use ONLY when caller describes severe pain, swelling, bleeding, knocked-out tooth, or trauma.",
-            "parameters": {
-                "type": "object",
-                "properties": {"reason": {"type": "string"}},
-                "required": ["reason"],
-            },
-        },
-    },
-]
 
 
 # ---------- gating logic mirrored from bot.py ----------
