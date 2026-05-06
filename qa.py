@@ -125,10 +125,19 @@ def run_unit_tests() -> dict:
     }
 
 
-def run_full_eval(concurrency: int, model: str | None) -> dict:
-    """Spawn run_eval.py with --json-out, parse and return the structured
-    result. Returns {rows, llm_call_ms, wall_s} (same as watch.py)."""
+def run_full_eval(concurrency: int, model: str | None, progress_log: Path) -> dict:
+    """Spawn run_eval.py with --json-out, stream its stdout line-by-line to
+    `progress_log` (so the user can `tail -f` the file to watch progress in
+    real time), then parse the JSON output it produced. Returns
+    {rows, llm_call_ms, wall_s}.
+
+    Progress log format:
+        [HH:MM:SS] [3/100] running happy_path_basic...
+    Each "running <case>..." line increments the in-flight counter; the log
+    survives qa.py crashes so you can see how far the run got.
+    """
     print(f"[qa] running full eval (concurrency={concurrency})...", flush=True)
+    print(f"[qa] live progress: tail -f {progress_log}", flush=True)
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
         json_path = Path(f.name)
     try:
@@ -141,7 +150,32 @@ def run_full_eval(concurrency: int, model: str | None) -> dict:
         if model:
             cmd += ["--model", model]
         env = os.environ.copy()
-        subprocess.run(cmd, cwd=ROOT, env=env, check=False)
+
+        # Stream stdout/stderr line-by-line into the progress log.
+        proc = subprocess.Popen(
+            cmd, cwd=ROOT, env=env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1,  # line-buffered
+        )
+        case_count = 0
+        with open(progress_log, "w") as plog:
+            plog.write(f"# qa.py progress log\n# started: {datetime.datetime.now().isoformat(timespec='seconds')}\n# cmd: {' '.join(cmd)}\n\n")
+            plog.flush()
+            for raw_line in proc.stdout:  # type: ignore[union-attr]
+                line = raw_line.rstrip("\n")
+                if line.startswith("running "):
+                    case_count += 1
+                    prefix = f"[{datetime.datetime.now():%H:%M:%S}] [{case_count:>3}] "
+                else:
+                    prefix = f"[{datetime.datetime.now():%H:%M:%S}]      "
+                plog.write(prefix + line + "\n")
+                plog.flush()
+        proc.wait()
+        plog_msg = f"# finished: {datetime.datetime.now().isoformat(timespec='seconds')}  exit={proc.returncode}  cases_seen={case_count}\n"
+        with open(progress_log, "a") as plog:
+            plog.write(plog_msg)
+        print(f"[qa] eval subprocess exited (code {proc.returncode}, {case_count} cases observed)", flush=True)
+
         if not json_path.exists() or json_path.stat().st_size == 0:
             raise RuntimeError(f"run_eval.py produced no JSON output at {json_path}")
         return json.loads(json_path.read_text())
@@ -424,7 +458,9 @@ def main() -> int:
         print(f"[qa] unit tests: {unit['passed']} passed, {unit['failed']} failed", flush=True)
 
     # 2. Full eval
-    eval_result = run_full_eval(args.concurrency, args.model)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    progress_log = RUNS_DIR / f"qa_{timestamp}_progress.log"
+    eval_result = run_full_eval(args.concurrency, args.model, progress_log)
     eval_summary = summarize_eval(eval_result)
     print(f"[qa] eval: {eval_summary['passed']}/{eval_summary['total']} passed", flush=True)
 
@@ -456,7 +492,6 @@ def main() -> int:
         has_regression=has_regression,
     )
 
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = RUNS_DIR / f"qa_{timestamp}.md"
     report_path.write_text(report)
 
@@ -488,6 +523,8 @@ def main() -> int:
     print()
     print("Share this path with Claude / your analyst:")
     print(f"  {report_path}")
+    print()
+    print(f"Live progress log (tail-able mid-run): {progress_log}")
     print()
 
     return 1 if has_regression else 0
