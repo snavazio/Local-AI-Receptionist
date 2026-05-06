@@ -80,7 +80,19 @@ python eval/run_eval.py --concurrency 4 --model qwen2.5:7b
 
 Current baseline: **80/100** on Qwen 2.5 14B Q4. The remaining gap is concentrated in the message-taking flow (~6/10 fail) where the LLM gathers slots correctly but drifts away from invoking the tool — this is what `bot_flows.py` exists to fix.
 
-### Regression watcher
+### Autonomous QA (analyst-friendly)
+
+`qa.py` is the one-shot runner. It runs unit tests + the full eval + trend update + writes a single comprehensive report (`qa_runs/qa_<timestamp>.md`). The report includes failing-case transcripts, so an analyst (Claude or a teammate) can propose fixes without re-running anything.
+
+```bash
+python qa.py                  # standard run; updates baseline if no regression
+python qa.py --no-update      # ad-hoc check; don't touch baseline
+python qa.py --model qwen2.5:7b   # try a different model
+```
+
+When it finishes, it prints the report path. Share that path with your analyst — they read it, propose fixes, you apply, you re-run.
+
+### Regression watcher (lower-level)
 
 `eval/watch.py` runs the eval, compares against the previous accepted run, and emits a focused diff report. Cron-friendly: it exits non-zero when a case newly fails or LLM p95 spikes by >1s, so a scheduler can flag the owner.
 

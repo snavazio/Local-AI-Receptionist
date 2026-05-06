@@ -183,3 +183,6 @@ tests/audio_fixtures/
 
 # Claude Code per-machine local overrides
 .claude/settings.local.json
+
+# qa.py output reports
+qa_runs/
