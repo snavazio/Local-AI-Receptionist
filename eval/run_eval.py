@@ -201,6 +201,14 @@ def main() -> int:
         action="store_true",
         help="Run only the curated smoke set (eval/smoke.txt) — ~30 cases, ~5 min. For fast iteration loops.",
     )
+    parser.add_argument(
+        "--judge",
+        action="store_true",
+        help="Add an LLM-as-judge scoring pass after each case. Doubles runtime. "
+             "Scores conversation quality on 1-5 scales (conciseness, clarity, "
+             "task completion, naturalness, error recovery). Advisory only — "
+             "doesn't change pass/fail. JUDGE_MODEL env var picks the judge LLM.",
+    )
     parser.add_argument("--category", help="Run only cases in this category")
     parser.add_argument(
         "--shard",
@@ -328,21 +336,42 @@ def main() -> int:
 
             passed, failures = evaluate(case, result)
             all_llm_call_ms.extend(result.llm_call_ms)
-            rows.append({
+            assistant_texts = [t.text for t in result.turns if t.role == "assistant" and t.text]
+            tool_calls_dump = [
+                {"name": tc.name, "args": tc.args, "result": tc.result}
+                for tc in result.tool_calls
+            ]
+            row = {
                 "id": case["id"],
                 "category": case.get("category", ""),
                 "description": case.get("description", ""),
                 "passed": passed,
                 "failures": failures,
-                "assistant_texts": [t.text for t in result.turns if t.role == "assistant" and t.text],
-                "tool_calls": [
-                    {"name": tc.name, "args": tc.args, "result": tc.result}
-                    for tc in result.tool_calls
-                ],
+                "assistant_texts": assistant_texts,
+                "tool_calls": tool_calls_dump,
                 "llm_call_ms": result.llm_call_ms,
                 "prompt_tokens": getattr(result, "prompt_tokens", 0),
                 "completion_tokens": getattr(result, "completion_tokens", 0),
-            })
+            }
+            if args.judge:
+                from judge import judge_case
+                jscore = judge_case(
+                    case=case,
+                    user_turns=case.get("user_turns", []),
+                    assistant_texts=assistant_texts,
+                    tool_calls=tool_calls_dump,
+                )
+                row["judge"] = {
+                    "conciseness": jscore.conciseness,
+                    "clarity": jscore.clarity,
+                    "task_completion": jscore.task_completion,
+                    "naturalness": jscore.naturalness,
+                    "error_recovery": jscore.error_recovery,
+                    "summary": jscore.summary,
+                    "average": jscore.average,
+                    "error": jscore.error,
+                }
+            rows.append(row)
 
     if args.json_out:
         Path(args.json_out).write_text(json.dumps({
