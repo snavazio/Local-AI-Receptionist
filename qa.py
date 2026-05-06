@@ -508,12 +508,127 @@ def render_report(
 # Main
 # ============================================================================
 
+def run_one(*, model: str | None, args, started_at: str) -> tuple[Path, dict]:
+    """Run unit tests + eval for ONE model and produce one markdown report.
+    Returns (report_path, eval_summary). Used both for single-model runs and
+    multi-model comparison loops."""
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    slug = (model or "default").replace(":", "_").replace("/", "_")
+    progress_log = RUNS_DIR / f"qa_{timestamp}_{slug}_progress.log"
+    if not args.skip_unit_tests:
+        unit = run_unit_tests()
+    else:
+        unit = {"passed": 0, "failed": 0, "total": 0, "exit_code": 0,
+                "output": "(skipped via --skip-unit-tests)"}
+    eval_result = run_full_eval(args.concurrency, model, progress_log)
+    eval_summary = summarize_eval(eval_result)
+    baseline = load_baseline()
+    regressed, recovered = diff_categories(eval_summary, baseline)
+    has_regression = len(regressed) > 0
+    append_history(eval_summary)
+    finished_at = datetime.datetime.now().isoformat(timespec="seconds")
+    durations = parse_case_durations(progress_log)
+    report = render_report(
+        started_at=started_at,
+        finished_at=finished_at,
+        git=git_state(),
+        unit=unit,
+        eval_result=eval_result,
+        eval_summary=eval_summary,
+        baseline=baseline,
+        regressed=regressed,
+        recovered=recovered,
+        history=trend_lines(),
+        has_regression=has_regression,
+        durations=durations,
+    )
+    report_path = RUNS_DIR / f"qa_{timestamp}_{slug}.md"
+    report_path.write_text(report)
+    eval_summary["_model"] = model or "default"
+    eval_summary["_report_path"] = str(report_path)
+    eval_summary["_progress_log"] = str(progress_log)
+    eval_summary["_has_regression"] = has_regression
+    eval_summary["_unit_failed"] = unit["failed"]
+    return report_path, eval_summary
+
+
+def render_comparison(summaries: list[dict], started_at: str) -> str:
+    """Side-by-side comparison report when running multiple models."""
+    L: list[str] = []
+    L.append(f"# Multi-model comparison — {datetime.datetime.now().isoformat(timespec='seconds')}")
+    L.append("")
+    L.append(f"Started: {started_at}")
+    L.append(f"Models: {', '.join(s['_model'] for s in summaries)}")
+    L.append("")
+    L.append("## Overall pass rate")
+    L.append("")
+    L.append("| Model | Pass | Total | Rate | Wall | LLM p50 | LLM p95 |")
+    L.append("| --- | --- | --- | --- | --- | --- | --- |")
+    for s in summaries:
+        rate = s["passed"] / max(s["total"], 1) * 100
+        wall = f"{s['wall_s']:.0f}s" if s.get("wall_s") else "?"
+        L.append(
+            f"| `{s['_model']}` | {s['passed']} | {s['total']} | {rate:.0f}% | "
+            f"{wall} | {s['latency']['p50']} ms | {s['latency']['p95']} ms |"
+        )
+    L.append("")
+    cats = sorted({c for s in summaries for c in s.get("by_category", {})})
+    if cats:
+        L.append("## Per-category pass count")
+        L.append("")
+        header = "| Category | " + " | ".join(f"`{s['_model']}`" for s in summaries) + " |"
+        sep = "| --- " * (1 + len(summaries)) + "|"
+        L.append(header); L.append(sep)
+        for cat in cats:
+            row = [cat]
+            for s in summaries:
+                c = s.get("by_category", {}).get(cat, {"pass": 0, "total": 0})
+                row.append(f"{c['pass']}/{c['total']}")
+            L.append("| " + " | ".join(row) + " |")
+        L.append("")
+    L.append("## Per-case agreement matrix")
+    L.append("")
+    L.append("Cases where models disagree are the most informative.")
+    L.append("")
+    all_cases = sorted({cid for s in summaries for cid in s.get("by_case", {})})
+    disagree = []
+    for cid in all_cases:
+        results = [s.get("by_case", {}).get(cid) for s in summaries]
+        if len(set(results)) > 1 and None not in results:
+            disagree.append((cid, results))
+    L.append(f"**{len(disagree)} cases** where models disagree (out of {len(all_cases)}).")
+    L.append("")
+    if disagree:
+        header = "| Case | " + " | ".join(f"`{s['_model']}`" for s in summaries) + " |"
+        L.append(header)
+        L.append("| --- " * (1 + len(summaries)) + "|")
+        for cid, results in disagree[:50]:  # cap to first 50
+            row = [f"`{cid}`"] + ["✅" if r else "❌" for r in results]
+            L.append("| " + " | ".join(row) + " |")
+        if len(disagree) > 50:
+            L.append(f"_({len(disagree) - 50} more disagreements omitted)_")
+        L.append("")
+    L.append("## Individual reports")
+    L.append("")
+    for s in summaries:
+        L.append(f"- `{s['_model']}`: [{Path(s['_report_path']).name}]({Path(s['_report_path']).name})")
+    L.append("")
+    return "\n".join(L)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--concurrency", type=int, default=1,
                         help="Parallel subprocess shards (default 1; set higher only if "
                              "you accept noisier latency numbers).")
-    parser.add_argument("--model", help="Override LLM (sets EVAL_MODEL env var)")
+    parser.add_argument(
+        "--model",
+        help=(
+            "Override LLM. Comma-separate to compare multiple models in one run "
+            "(e.g. --model qwen2.5:14b,qwen2.5:7b,hermes3:8b). Each model gets its "
+            "own report; a comparison report is written for any 2+ model run."
+        ),
+    )
     parser.add_argument("--no-update", action="store_true",
                         help="Don't update baseline.json even if there's no regression.")
     parser.add_argument("--skip-unit-tests", action="store_true",
@@ -523,90 +638,56 @@ def main() -> int:
     started_at = datetime.datetime.now().isoformat(timespec="seconds")
     print(f"[qa] starting at {started_at}", flush=True)
     print(f"[qa] cwd: {ROOT}", flush=True)
-
     RUNS_DIR.mkdir(exist_ok=True)
 
-    # 1. Unit tests
-    if args.skip_unit_tests:
-        unit = {"passed": 0, "failed": 0, "total": 0, "exit_code": 0,
-                "output": "(skipped via --skip-unit-tests)"}
+    # Parse model list. Empty / not set = single default-model run.
+    if args.model:
+        model_list = [m.strip() for m in args.model.split(",") if m.strip()]
     else:
-        unit = run_unit_tests()
-        print(f"[qa] unit tests: {unit['passed']} passed, {unit['failed']} failed", flush=True)
+        model_list = [None]  # use harness default
 
-    # 2. Full eval
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    progress_log = RUNS_DIR / f"qa_{timestamp}_progress.log"
-    eval_result = run_full_eval(args.concurrency, args.model, progress_log)
-    eval_summary = summarize_eval(eval_result)
-    print(f"[qa] eval: {eval_summary['passed']}/{eval_summary['total']} passed", flush=True)
+    summaries: list[dict] = []
+    overall_regression = False
+    overall_unit_failed = 0
+    for i, model in enumerate(model_list, 1):
+        if len(model_list) > 1:
+            print(f"\n[qa] === model {i}/{len(model_list)}: {model or '(default)'} ===\n", flush=True)
+        report_path, summary = run_one(model=model, args=args, started_at=started_at)
+        summaries.append(summary)
+        overall_regression = overall_regression or summary["_has_regression"]
+        overall_unit_failed += summary["_unit_failed"]
+        pass_rate = summary["passed"] / max(summary["total"], 1) * 100
+        print(f"[qa] {model or 'default'}: {summary['passed']}/{summary['total']} ({pass_rate:.0f}%) -> {report_path.name}", flush=True)
 
-    # 3. Compare to baseline
-    baseline = load_baseline()
-    regressed, recovered = diff_categories(eval_summary, baseline)
-    has_regression = len(regressed) > 0
-    if baseline:
-        print(f"[qa] regressions={len(regressed)} recoveries={len(recovered)}", flush=True)
+    # Multi-model comparison report
+    comparison_path: Path | None = None
+    if len(summaries) > 1:
+        comparison = render_comparison(summaries, started_at)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        comparison_path = RUNS_DIR / f"qa_{ts}_comparison.md"
+        comparison_path.write_text(comparison)
+        print(f"[qa] multi-model comparison -> {comparison_path}", flush=True)
 
-    # 4. Append to history
-    append_history(eval_summary)
-
-    # 5. Build report
-    finished_at = datetime.datetime.now().isoformat(timespec="seconds")
-    git = git_state()
-    history = trend_lines()
-    durations = parse_case_durations(progress_log)
-    report = render_report(
-        started_at=started_at,
-        finished_at=finished_at,
-        git=git,
-        unit=unit,
-        eval_result=eval_result,
-        eval_summary=eval_summary,
-        baseline=baseline,
-        regressed=regressed,
-        recovered=recovered,
-        history=history,
-        has_regression=has_regression,
-        durations=durations,
-    )
-
-    report_path = RUNS_DIR / f"qa_{timestamp}.md"
-    report_path.write_text(report)
-
-    # 6. Update baseline if appropriate
-    if not args.no_update:
-        if not has_regression and unit["failed"] == 0:
-            BASELINE.write_text(json.dumps(eval_summary, indent=2))
+    # Update baseline if a SINGLE-model run AND no regression AND tests pass.
+    # In multi-model mode we don't auto-update — too easy to overwrite a
+    # canonical baseline with a non-canonical model's run.
+    if len(model_list) == 1 and not args.no_update:
+        s = summaries[0]
+        if not s["_has_regression"] and s["_unit_failed"] == 0:
+            BASELINE.write_text(json.dumps({k: v for k, v in s.items() if not k.startswith("_")}, indent=2))
             print(f"[qa] baseline updated -> {BASELINE}", flush=True)
-        else:
-            reasons = []
-            if has_regression:
-                reasons.append(f"{len(regressed)} case regressions")
-            if unit["failed"]:
-                reasons.append(f"{unit['failed']} unit test failures")
-            print(f"[qa] baseline NOT updated ({', '.join(reasons)})", flush=True)
 
-    # 7. Final summary line for the user
     print()
     print("=" * 60)
-    print(f"REPORT: {report_path}")
+    if comparison_path:
+        print(f"COMPARISON REPORT: {comparison_path}")
+    for s in summaries:
+        rate = s["passed"] / max(s["total"], 1) * 100
+        flag = "🔴" if s["_has_regression"] else ("🟡" if s["_unit_failed"] else "🟢")
+        print(f"  {flag} {s['_model']:<22} {s['passed']:>3}/{s['total']} ({rate:>3.0f}%)  ->  {Path(s['_report_path']).name}")
     print("=" * 60)
-    pass_rate = eval_summary["passed"] / max(eval_summary["total"], 1) * 100
-    delta = ""
-    if baseline:
-        d = eval_summary["passed"] - baseline["passed"]
-        delta = f" (vs baseline: {'+' if d >= 0 else ''}{d})"
-    flag = "🔴 REGRESSION" if has_regression else ("🟡 unit failures" if unit["failed"] else "🟢 clean")
-    print(f"{flag}  Eval {eval_summary['passed']}/{eval_summary['total']} ({pass_rate:.0f}%){delta}  ·  Tests {unit['passed']}/{unit['total']}")
     print()
-    print("Share this path with Claude / your analyst:")
-    print(f"  {report_path}")
-    print()
-    print(f"Live progress log (tail-able mid-run): {progress_log}")
-    print()
-
-    return 1 if has_regression else 0
+    return 1 if overall_regression else 0
 
 
 if __name__ == "__main__":
