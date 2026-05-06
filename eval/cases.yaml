@@ -1542,3 +1542,417 @@
     tool_must_not_be_called:
       - book_appointment_callback
     max_assistant_farewells: 1
+
+# ============================================================================
+# BATCH 1 — happy_path variants (20 cases)
+# Each existing happy_path case gets two cousins:
+#   - _alt_values: same flow, different name/phone/time. Tests value-independence —
+#     the LLM should not be anchoring on previously-seen values.
+#   - _phrasing: alternate caller phrasing of the same intent. Tests phrasing-
+#     independence — the LLM should recognize a booking request even when the
+#     caller's words differ from the original case.
+# ============================================================================
+
+- id: happy_path_basic_alt_values
+  category: happy_path
+  description: |
+    Variant of happy_path_basic with completely different name, phone, and
+    time values. Verifies the LLM doesn't anchor on previously-seen values
+    when the same flow is exercised.
+  user_turns:
+    - "I'd like to book a cleaning for next Wednesday."
+    - "My name is Priya Sharma."
+    - "Six four six, two zero two, eight one three nine."
+    - "Yes, that's correct."
+    - "Three PM."
+    - "No, that's all, thanks."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "priya"
+      callback_number: "6462028139"
+    assistant_must_not_say:
+      - "I have a slot at"
+      - "your appointment is booked"
+    max_assistant_farewells: 1
+
+- id: happy_path_basic_phrasing
+  category: happy_path
+  description: |
+    Variant of happy_path_basic with the same intent expressed in different
+    phrasing ("get on the schedule" instead of "book"). Verifies phrasing-
+    independence.
+  user_turns:
+    - "Hi, I want to get on the schedule for a cleaning."
+    - "Tuesday."
+    - "Diane Williams."
+    - "Eight zero five, five five five, zero one nine four."
+    - "Yes."
+    - "Eleven AM."
+    - "Nope, that's it."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "diane"
+      callback_number: "8055550194"
+    max_assistant_farewells: 1
+
+- id: happy_path_friday_morning_alt_values
+  category: happy_path
+  description: |
+    Friday morning variant with different caller identity. Tests value
+    independence on the morning-time pattern specifically.
+  user_turns:
+    - "Can I get an appointment Friday morning?"
+    - "Carlos Mendoza."
+    - "Three one zero, five five five, zero one seven seven."
+    - "Yes."
+    - "Ten AM works."
+    - "No thanks."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "carlos"
+      callback_number: "3105550177"
+    max_assistant_farewells: 1
+
+- id: happy_path_friday_morning_phrasing
+  category: happy_path
+  description: |
+    Friday morning request phrased as 'first thing Friday' instead of
+    'Friday morning'. Tests that the LLM recognizes synonymous time phrases.
+  user_turns:
+    - "I'd like to come in first thing Friday."
+    - "Eight AM is good."
+    - "Aisha Khan."
+    - "Two zero two, five five five, zero one three three."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "aisha"
+      callback_number: "2025550133"
+    max_assistant_farewells: 1
+
+- id: happy_path_specific_dentist_alt_values
+  category: happy_path
+  description: |
+    Filling-procedure variant with different caller. Verifies the
+    procedure-mention doesn't anchor the LLM on prior caller details.
+  user_turns:
+    - "I need to come in for a filling next Thursday."
+    - "Vikram Iyer."
+    - "Four oh eight, five five five, zero one six six."
+    - "Yes that's correct."
+    - "Two PM."
+    - "No, all good."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "vikram"
+      callback_number: "4085550166"
+    max_assistant_farewells: 1
+
+- id: happy_path_specific_dentist_phrasing
+  category: happy_path
+  description: |
+    Filling request phrased with 'tooth needs work' instead of explicitly
+    naming the procedure. Tests that the LLM books regardless of how
+    specific the procedure description is.
+  user_turns:
+    - "One of my teeth needs some work, can I come in?"
+    - "Sometime next week, maybe Wednesday."
+    - "Beatrice Cole."
+    - "Five seven zero, five five five, zero one zero five."
+    - "Yes."
+    - "Two PM Wednesday."
+    - "No thanks."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "beatrice"
+      callback_number: "5705550105"
+    max_assistant_farewells: 1
+
+- id: happy_path_polite_caller_alt_values
+  category: happy_path
+  description: |
+    Verbose-polite caller pattern with different identity. Tests that
+    politeness padding doesn't break slot extraction.
+  user_turns:
+    - "Hi, hopefully you can help me — I was hoping to schedule a routine cleaning sometime next week if possible please."
+    - "Actually I should mention, my name is Theo Nakamura, sorry for not introducing myself."
+    - "It's nine seven three, five five five, zero one eight eight."
+    - "Yes that's right, thank you."
+    - "Tuesday at three would be great if you have it."
+    - "No, that's everything. Thank you so much!"
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "theo"
+      callback_number: "9735550188"
+    max_assistant_farewells: 1
+
+- id: happy_path_polite_caller_phrasing
+  category: happy_path
+  description: |
+    Polite caller using more formal/British phrasing ("I'd very much
+    appreciate", "if it's no trouble"). Tests style-independence.
+  user_turns:
+    - "Good afternoon. I'd very much appreciate it if I could schedule a check-up appointment, if it's no trouble."
+    - "My name is Geoffrey Whitmore."
+    - "Two zero six, five five five, zero one one two."
+    - "Quite right."
+    - "Friday at eleven if that works."
+    - "Nothing further, thank you very much."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "geoffrey"
+      callback_number: "2065550112"
+    max_assistant_farewells: 1
+
+- id: happy_path_terse_caller_alt_values
+  category: happy_path
+  description: |
+    Terse-caller pattern with different identity. Tests that minimal
+    inputs still satisfy the slot collection without the LLM padding
+    or assuming.
+  user_turns:
+    - "Cleaning."
+    - "Wednesday."
+    - "Karen."
+    - "9165550141."
+    - "Yes."
+    - "Two PM."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "karen"
+      callback_number: "9165550141"
+    max_assistant_farewells: 1
+
+- id: happy_path_terse_caller_phrasing
+  category: happy_path
+  description: |
+    Even-terser caller answering in single-word fragments. Tests robustness
+    when caller phrasings barely contain syntactic structure.
+  user_turns:
+    - "Appointment."
+    - "Thursday morning."
+    - "Mike."
+    - "503-555-0188."
+    - "Right."
+    - "Nine."
+    - "Nope."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "mike"
+      callback_number: "5035550188"
+    max_assistant_farewells: 1
+
+- id: happy_path_evening_request_alt_values
+  category: happy_path
+  description: |
+    Late-day appointment request with different identity. Office closes
+    at 5; verify the LLM still books the latest slot the caller asks for
+    rather than refusing.
+  user_turns:
+    - "I'd like the latest appointment available next Wednesday."
+    - "Patrick Sullivan."
+    - "Six one seven, five five five, zero one four three."
+    - "That's right."
+    - "Four-thirty in the afternoon."
+    - "That's all."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "patrick"
+      callback_number: "6175550143"
+    max_assistant_farewells: 1
+
+- id: happy_path_evening_request_phrasing
+  category: happy_path
+  description: |
+    Late-day request phrased as 'right before you close'. Tests that the
+    LLM understands relative-to-closing-time without inventing a calendar.
+  user_turns:
+    - "Can I come in right before you close on Tuesday?"
+    - "Four forty-five works for me."
+    - "Imani Brooks."
+    - "Two five three, five five five, zero one nine one."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "imani"
+      callback_number: "2535550191"
+    max_assistant_farewells: 1
+
+- id: happy_path_two_kids_alt_values
+  category: happy_path
+  description: |
+    Family-mention pattern with different caller. Tests that the LLM
+    books a single appointment as requested even when family context
+    is mentioned.
+  user_turns:
+    - "I want to book a cleaning for my daughter. Just one appointment for now."
+    - "Alejandra Reyes."
+    - "Three zero three, five five five, zero one zero seven."
+    - "Yes."
+    - "Friday at four PM."
+    - "No, thanks."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "alejandra"
+      callback_number: "3035550107"
+    max_assistant_farewells: 1
+
+- id: happy_path_two_kids_phrasing
+  category: happy_path
+  description: |
+    Caller mentions wife's appointment but books for herself. Tests that
+    the LLM doesn't get confused by referenced-but-not-current attendee.
+  user_turns:
+    - "My wife had a great experience here last month — I'd like to come in myself now."
+    - "Tuesday afternoon would be ideal."
+    - "Eric Larsen."
+    - "Two one five, five five five, zero one six zero."
+    - "Yes."
+    - "Two PM."
+    - "No, that's it."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "eric"
+      callback_number: "2155550160"
+    max_assistant_farewells: 1
+
+- id: happy_path_returning_patient_alt_values
+  category: happy_path
+  description: |
+    Returning-patient pattern with different identity. Verify the LLM
+    doesn't try to look up the patient or claim it can; just books.
+  user_turns:
+    - "Hi, I've been a patient for years. I need my six-month checkup."
+    - "Rosa Delgado."
+    - "Seven seven five, five five five, zero one two zero."
+    - "Yes."
+    - "Wednesday at one PM."
+    - "No, that's it. Thanks."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "rosa"
+      callback_number: "7755550120"
+    assistant_must_not_say:
+      - "I see your record"
+      - "I'll look you up"
+      - "I have you on file"
+    max_assistant_farewells: 1
+
+- id: happy_path_returning_patient_phrasing
+  category: happy_path
+  description: |
+    Returning patient phrasing 'time for my regular cleaning' instead of
+    'six-month checkup'. Tests recognition of synonymous routine-care
+    requests.
+  user_turns:
+    - "It's time for my regular cleaning."
+    - "Hank Yamamoto."
+    - "Eight zero eight, five five five, zero one seven five."
+    - "That's right."
+    - "Monday at ten."
+    - "Nope."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "hank"
+      callback_number: "8085550175"
+    max_assistant_farewells: 1
+
+- id: happy_path_consultation_alt_values
+  category: happy_path
+  description: |
+    Consultation-request variant with different procedure mentioned
+    (veneers vs crown). Verify slot extraction is independent of the
+    medical-procedure word.
+  user_turns:
+    - "I'd like to come in for a consultation about getting veneers."
+    - "Sienna Adams."
+    - "Six one two, five five five, zero one zero zero."
+    - "Right."
+    - "Next Tuesday at three PM."
+    - "No thanks."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "sienna"
+      callback_number: "6125550100"
+    max_assistant_farewells: 1
+
+- id: happy_path_consultation_phrasing
+  category: happy_path
+  description: |
+    Consultation request phrased as 'just want to talk to the doctor'
+    rather than naming the procedure. Tests recognition of vague-but-
+    legitimate consultation intent.
+  user_turns:
+    - "I'd like to come in just to talk to Dr. Smith about some options."
+    - "Jin-Ho Park."
+    - "Two zero seven, five five five, zero one nine three."
+    - "Yes."
+    - "Thursday at noon."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "jin"
+      callback_number: "2075550193"
+    max_assistant_farewells: 1
+
+- id: happy_path_with_pleasantries_alt_values
+  category: happy_path
+  description: |
+    Small-talk-then-business pattern with different identity. Tests that
+    the LLM doesn't get distracted by the social opener.
+  user_turns:
+    - "Hi, hope you're having a good morning!"
+    - "I'd like to book a cleaning."
+    - "Nadia Torres."
+    - "Seven oh three, five five five, zero one five eight."
+    - "Yes, that's it."
+    - "Wednesday at three PM."
+    - "No, thank you."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "nadia"
+      callback_number: "7035550158"
+    max_assistant_farewells: 1
+
+- id: happy_path_with_pleasantries_phrasing
+  category: happy_path
+  description: |
+    Caller asks 'how's your day going' before stating intent. Tests that
+    the LLM responds briefly without inventing a personal answer, then
+    handles the booking.
+  user_turns:
+    - "Hi! How's your day going?"
+    - "Great. So I need to book a cleaning."
+    - "Wesley Tran."
+    - "Eight one eight, five five five, zero one four nine."
+    - "Yes."
+    - "Friday at two PM."
+    - "Nope, that's all."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "wesley"
+      callback_number: "8185550149"
+    max_assistant_farewells: 1
