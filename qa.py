@@ -46,6 +46,13 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Make eval/ importable.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "eval"))
+from analyze import (  # noqa: E402
+    classify_failures, summarize_failure_modes,
+    flakiness_score, top_flaky, load_history,
+)
+
 ROOT = Path(__file__).resolve().parent
 EVAL_DIR = ROOT / "eval"
 TESTS_DIR = ROOT / "tests"
@@ -125,7 +132,7 @@ def run_unit_tests() -> dict:
     }
 
 
-def run_full_eval(concurrency: int, model: str | None, progress_log: Path) -> dict:
+def run_full_eval(concurrency: int, model: str | None, progress_log: Path, smoke: bool = False) -> dict:
     """Spawn run_eval.py with --json-out, stream its stdout line-by-line to
     `progress_log` (so the user can `tail -f` the file to watch progress in
     real time), then parse the JSON output it produced. Returns
@@ -149,6 +156,8 @@ def run_full_eval(concurrency: int, model: str | None, progress_log: Path) -> di
         ]
         if model:
             cmd += ["--model", model]
+        if smoke:
+            cmd.append("--smoke")
         env = os.environ.copy()
 
         # Stream stdout/stderr line-by-line into the progress log.
@@ -473,6 +482,44 @@ def render_report(
                 L.append(f"| {cat} | {len(vals)} | {mean:.1f}s | {max(vals)}s |")
             L.append("")
 
+    # Failure-mode classification — which fix shape applies?
+    rows_for_classify = eval_result.get("rows", [])
+    annotated = classify_failures(rows_for_classify)
+    if annotated:
+        modes = summarize_failure_modes(annotated)
+        L.append("## Failure modes (auto-classified)")
+        L.append("")
+        L.append("Maps each failure to a known mode from `docs/QA_WORKFLOW.md`. "
+                 "Use this to plan fixes by category instead of reading every transcript.")
+        L.append("")
+        L.append("| Mode | Count | Categories | Sample case ids |")
+        L.append("| --- | --- | --- | --- |")
+        for mode in sorted(modes, key=lambda k: -modes[k]["count"]):
+            info = modes[mode]
+            cats = ", ".join(info["categories"])
+            ex = ", ".join(f"`{x}`" for x in info["examples"])
+            L.append(f"| {mode} | {info['count']} | {cats} | {ex} |")
+        L.append("")
+
+    # Flakiness — read history and surface flaky cases
+    history_rows = load_history(HISTORY)
+    if history_rows:
+        scores = flakiness_score(history_rows, last_n=10)
+        flaky = top_flaky(scores, n=10, min_runs=3)
+        if flaky:
+            L.append("## Flakiest cases (last 10 runs)")
+            L.append("")
+            L.append("Cases that flip pass/fail across runs are noise. Either fix them, "
+                     "stabilize them, or down-weight in scoring.")
+            L.append("")
+            L.append("| Case | Flakiness | Flips | Pass:Fail | Currently |")
+            L.append("| --- | --- | --- | --- | --- |")
+            for cid, info in flaky:
+                cur = "✅ pass" if info["current"] else "❌ fail"
+                L.append(f"| `{cid}` | {info['flakiness']} | {info['flips']} "
+                         f"| {info['pass_count']}:{info['fail_count']} | {cur} |")
+            L.append("")
+
     # Failing-case transcripts — the key value for an analyst
     rows = eval_result.get("rows", [])
     failures = [r for r in rows if not r["passed"]]
@@ -528,7 +575,7 @@ def run_one(*, model: str | None, args, started_at: str) -> tuple[Path, dict]:
     else:
         unit = {"passed": 0, "failed": 0, "total": 0, "exit_code": 0,
                 "output": "(skipped via --skip-unit-tests)"}
-    eval_result = run_full_eval(args.concurrency, model, progress_log)
+    eval_result = run_full_eval(args.concurrency, model, progress_log, smoke=args.smoke)
     eval_summary = summarize_eval(eval_result)
     baseline = load_baseline()
     regressed, recovered = diff_categories(eval_summary, baseline)
@@ -641,6 +688,9 @@ def main() -> int:
                         help="Don't update baseline.json even if there's no regression.")
     parser.add_argument("--skip-unit-tests", action="store_true",
                         help="Skip pytest (rare; usually you want them).")
+    parser.add_argument("--smoke", action="store_true",
+                        help="Run only the curated smoke set (~30 cases, ~5 min). "
+                             "Forwards to run_eval.py --smoke.")
     args = parser.parse_args()
 
     started_at = datetime.datetime.now().isoformat(timespec="seconds")

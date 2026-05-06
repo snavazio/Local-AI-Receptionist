@@ -196,6 +196,11 @@ def main() -> int:
         "--cases",
         help="Run multiple cases by id (comma-separated). Example: --cases happy_path_basic,emergency_bleeding,correction_mid_flow",
     )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Run only the curated smoke set (eval/smoke.txt) — ~30 cases, ~5 min. For fast iteration loops.",
+    )
     parser.add_argument("--category", help="Run only cases in this category")
     parser.add_argument(
         "--shard",
@@ -245,6 +250,20 @@ def main() -> int:
         if not cases:
             print(f"No matching cases for --cases {args.cases!r}", file=sys.stderr)
             return 2
+    if args.smoke:
+        smoke_path = Path(__file__).parent / "smoke.txt"
+        if not smoke_path.exists():
+            print(f"Smoke set file not found: {smoke_path}", file=sys.stderr)
+            return 2
+        smoke_ids = {
+            line.strip() for line in smoke_path.read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        }
+        cases = [c for c in cases if c["id"] in smoke_ids]
+        missing = smoke_ids - {c["id"] for c in cases}
+        if missing:
+            print(f"Warning: smoke ids not found in cases.yaml: {sorted(missing)}", file=sys.stderr)
+        print(f"Running smoke set ({len(cases)} cases)", flush=True)
     if args.category:
         cases = [c for c in cases if c.get("category") == args.category]
         if not cases:

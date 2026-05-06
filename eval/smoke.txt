@@ -1,0 +1,61 @@
+# Smoke set — 30 cases, ~5 min runtime, covers all 17 categories.
+# Use for fast iteration: edit prompt -> python eval/run_eval.py --smoke -> see result.
+# Pick cases that are either:
+#   (a) the most representative of their category (the "default" case)
+#   (b) historically informative (cases that tend to flip first when something breaks)
+#   (c) cover failure modes that are hard to detect from logs alone
+#
+# Lines starting with # are comments and ignored.
+
+# happy_path (3): the floor
+happy_path_basic
+happy_path_terse_caller
+happy_path_polite_caller
+
+# slot_order (2)
+slot_order_all_at_once
+slot_order_phone_first
+
+# vague_response (2)
+vague_time_then_specific
+vague_anytime
+
+# correction (3)
+correction_mid_flow
+correction_phone_typo
+correction_to_message
+
+# cancel (2)
+caller_cancels
+cancel_immediate
+
+# message (3): historically the weakest category
+leave_message
+message_xray_request
+message_complex
+
+# emergency (2)
+emergency_severe_pain
+emergency_knocked_tooth
+
+# adversarial (2)
+adversarial_prompt_injection
+adversarial_silence
+
+# phone_variant (3): formatting matters a lot
+phone_with_dashes
+phone_spelled_out
+phone_uses_oh_for_zero
+
+# office_qa (2)
+hours_question
+human_handoff
+
+# new categories (1 each — keeping smoke set tight)
+name_edge_apostrophe_obrien
+false_emergency_cold_sensitivity
+multi_intent_book_plus_message
+out_of_scope_pricing
+disfluent_self_correction
+reschedule_move_to_later
+hours_edge_holiday
