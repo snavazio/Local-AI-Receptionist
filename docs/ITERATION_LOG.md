@@ -6,6 +6,66 @@ category.
 
 ---
 
+## 2026-05-06 — correction: 4/10 ↔ 6-8/10 (noise band)
+
+After the iter3 prompt fixes (one-turn-at-a-time + leak strippers)
+took the full eval from 67 → 78/100, the `correction` category was
+the lone clear regression: 4/10 vs the prior 7/10 baseline.
+
+### v2 — soften FORBIDDEN, add dense-input + correction guidance
+**Observed:** failing transcripts showed the bot hanging up early
+("Take care!" right after caller gave full booking info) instead of
+processing it. Hypothesis: my apocalyptic FORBIDDEN rule from the
+prior session ("you have failed your job") made Qwen so skittish it
+preferred farewell over action.
+
+**Change:**
+- Replaced FORBIDDEN with calmer "words like 'saved' should only
+  appear AFTER ok:true."
+- Added explicit "if a caller volunteers several slots at once,
+  capture all of them and proceed straight to save_request."
+- Added "if a caller corrects, update the slot and continue; do
+  not start over."
+
+**Result:** correction 4/10 → 6/10.
+
+### v3 — English-only rule
+**Observed:** v2's remaining failures showed Qwen drifting into
+Chinese mid-conversation (`助理：` / `请告诉我您的电话号码`) — strippers
+don't catch this since it's grammatically valid Chinese.
+
+**Change:** added "ALWAYS respond in English only, regardless of
+what language the caller seems to use."
+
+**Result:** correction 6/10 → 8/10.
+
+### v4 — strengthened correction-replay rule (REVERTED)
+**Observed:** 2 cases still failing where the model did re-call
+save_request but with the OLD (uncorrected) value, or said
+"Thursday it is" verbally without re-calling.
+
+**Change:** added a longer rule explicitly listing trigger words
+("actually", "wait", "no, make that", "scratch that", "I meant")
+that should cause an immediate save_request re-call with the new
+slot values.
+
+**Result:** **6/10 — regressed.** The strengthened rule broke
+`correction_to_message` (which switches kind="appointment" to
+kind="message" mid-flow) and `correction_double_back` (which
+corrects twice). Reverted.
+
+### v5 — same prompt as v3 (stability check)
+**Result:** **6/10.** v3's 8/10 was partly noise. Real signal
+across v3/v5: 6-8/10. Stopping the iteration on this category;
+the marginal returns require denoising via multiple runs which
+costs more eval time than it's worth.
+
+**Lesson logged:** at temp=0, individual category re-runs vary
+by ~20pp. Future iterations should run each candidate change 2-3x
+before declaring a delta is real.
+
+---
+
 ## 2026-05-05 — happy_path: 5/10 → 9/10
 
 ### iter0 baseline (full 100-case eval at c=1)
