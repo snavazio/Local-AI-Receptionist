@@ -249,6 +249,44 @@ def append_history(summary: dict) -> None:
         f.write(json.dumps(slim) + "\n")
 
 
+def parse_case_durations(progress_log: Path) -> list[dict]:
+    """Read the progress log, infer per-case duration from the timestamps
+    on consecutive 'running CASE_ID...' lines. Returns a list of
+    {id, started_at, duration_s} dicts. Last case's duration is computed
+    against the '# finished:' footer if present, else None."""
+    if not progress_log.exists():
+        return []
+    import re
+    line_re = re.compile(r"\[(\d{2}:\d{2}:\d{2})\]\s+\[\s*\d+\]\s+running ([\w_]+)\.\.\.")
+    finished_re = re.compile(r"^# finished:\s*(\S+)")
+    entries: list[tuple[str, str]] = []  # (timestamp_str, case_id)
+    finished_at: str | None = None
+    for line in progress_log.read_text().splitlines():
+        m = line_re.match(line)
+        if m:
+            entries.append((m.group(1), m.group(2)))
+            continue
+        m = finished_re.match(line)
+        if m:
+            finished_at = m.group(1).split("T")[-1] if "T" in m.group(1) else None
+
+    def to_secs(hms: str) -> int:
+        h, m, s = hms.split(":")
+        return int(h) * 3600 + int(m) * 60 + int(s)
+
+    durations: list[dict] = []
+    for i, (ts, cid) in enumerate(entries):
+        if i + 1 < len(entries):
+            next_ts = entries[i + 1][0]
+            dur = max(0, to_secs(next_ts) - to_secs(ts))
+        elif finished_at:
+            dur = max(0, to_secs(finished_at[:8]) - to_secs(ts))
+        else:
+            dur = None
+        durations.append({"id": cid, "started_at": ts, "duration_s": dur})
+    return durations
+
+
 def trend_lines(last_n: int = 10) -> list[str]:
     """Read history.jsonl and return ASCII sparklines for trend."""
     if not HISTORY.exists():
@@ -308,6 +346,7 @@ def render_report(
     recovered: list[str],
     history: list[str],
     has_regression: bool,
+    durations: list[dict] | None = None,
 ) -> str:
     L: list[str] = []
     L.append(f"# QA report — {finished_at}")
@@ -387,6 +426,44 @@ def render_report(
         L.append(unit["output"])
         L.append("```")
         L.append("")
+
+    # Per-case duration (helps spot speed-up opportunities)
+    if durations:
+        # Build case_id -> category map from this run
+        cid_to_cat = {r["id"]: r.get("category", "?") for r in eval_result.get("rows", [])}
+        # Filter to entries with known durations
+        d_with = [d for d in durations if d.get("duration_s") is not None]
+        if d_with:
+            L.append("## Per-case duration")
+            L.append("")
+            total = sum(d["duration_s"] for d in d_with)
+            n = len(d_with)
+            L.append(f"- Total measured: **{total}s** across {n} cases (mean {total/n:.1f}s/case)")
+            # Top-10 slowest
+            slow = sorted(d_with, key=lambda d: -d["duration_s"])[:10]
+            L.append("")
+            L.append("**Slowest 10 cases:**")
+            L.append("")
+            L.append("| # | Case | Category | Duration |")
+            L.append("| --- | --- | --- | --- |")
+            for i, d in enumerate(slow, 1):
+                cat = cid_to_cat.get(d["id"], "?")
+                L.append(f"| {i} | `{d['id']}` | {cat} | {d['duration_s']}s |")
+            L.append("")
+            # Per-category mean
+            from collections import defaultdict
+            cat_totals: dict[str, list[int]] = defaultdict(list)
+            for d in d_with:
+                cat_totals[cid_to_cat.get(d["id"], "?")].append(d["duration_s"])
+            L.append("**Mean duration per category:**")
+            L.append("")
+            L.append("| Category | N | Mean | Max |")
+            L.append("| --- | --- | --- | --- |")
+            for cat in sorted(cat_totals):
+                vals = cat_totals[cat]
+                mean = sum(vals) / len(vals)
+                L.append(f"| {cat} | {len(vals)} | {mean:.1f}s | {max(vals)}s |")
+            L.append("")
 
     # Failing-case transcripts — the key value for an analyst
     rows = eval_result.get("rows", [])
@@ -478,6 +555,7 @@ def main() -> int:
     finished_at = datetime.datetime.now().isoformat(timespec="seconds")
     git = git_state()
     history = trend_lines()
+    durations = parse_case_durations(progress_log)
     report = render_report(
         started_at=started_at,
         finished_at=finished_at,
@@ -490,6 +568,7 @@ def main() -> int:
         recovered=recovered,
         history=history,
         has_regression=has_regression,
+        durations=durations,
     )
 
     report_path = RUNS_DIR / f"qa_{timestamp}.md"
