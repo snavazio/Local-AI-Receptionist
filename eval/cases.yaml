@@ -1956,3 +1956,767 @@
       caller_name: "wesley"
       callback_number: "8185550149"
     max_assistant_farewells: 1
+
+# ============================================================================
+# BATCH 2 — slot_order + vague_response variants (40 cases)
+# Same _alt_values and _phrasing variant strategy as Batch 1, applied to the
+# 10 slot_order and 10 vague_response cases.
+# ============================================================================
+
+- id: slot_order_all_at_once_alt_values
+  category: slot_order
+  description: |
+    Caller crams name + phone + time into the first turn, with completely
+    different values from the original. Tests value-independence on the
+    dense-input pattern.
+  user_turns:
+    - "Hi this is Marcus Webb, my number is 415-555-0162, I'd like to come in Monday at 10 AM."
+    - "Yes."
+    - "No thanks."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "marcus"
+      callback_number: "4155550162"
+      preferred_window: "monday"
+    max_assistant_farewells: 1
+
+- id: slot_order_all_at_once_phrasing
+  category: slot_order
+  description: |
+    Dense first turn phrased without the conventional "this is X" intro.
+    Tests that the LLM extracts identity from in-line mention.
+  user_turns:
+    - "Get me in Thursday at three PM. Phone is 619-555-0144 and I go by Carmen Ortiz."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "carmen"
+      callback_number: "6195550144"
+      preferred_window: "thursday"
+    max_assistant_farewells: 1
+
+- id: slot_order_phone_first_alt_values
+  category: slot_order
+  description: |
+    Caller volunteers phone before being asked, then continues normally.
+    Different identity than the original case to test value-independence.
+  user_turns:
+    - "I want to book an appointment."
+    - "Let me give you my number first: 7185550199."
+    - "My name is Hideo Yamada."
+    - "Correct."
+    - "Wednesday at one PM."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "hideo"
+      callback_number: "7185550199"
+    max_assistant_farewells: 1
+
+- id: slot_order_phone_first_phrasing
+  category: slot_order
+  description: |
+    Caller proactively offers phone with phrasing 'easiest if I just give
+    you' rather than 'first'. Tests phrase-independence.
+  user_turns:
+    - "I'd like to schedule something."
+    - "Easiest if I just give you my number: 305-555-0118."
+    - "Tasha Greene."
+    - "Yes."
+    - "Friday at four PM."
+    - "Nope."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "tasha"
+      callback_number: "3055550118"
+    max_assistant_farewells: 1
+
+- id: slot_order_time_first_alt_values
+  category: slot_order
+  description: |
+    Caller leads with time before identity. Different name/phone/time from
+    original. Tests robustness on this ordering pattern.
+  user_turns:
+    - "I need an appointment Monday at 9 AM."
+    - "Tony Vasquez."
+    - "9495550133."
+    - "Yes."
+    - "No thanks."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "tony"
+      callback_number: "9495550133"
+      preferred_window: "monday"
+    max_assistant_farewells: 1
+
+- id: slot_order_time_first_phrasing
+  category: slot_order
+  description: |
+    Time-first phrased as 'the only time I can do is...'. Tests recognition
+    of constraint-style time mentions.
+  user_turns:
+    - "The only time I can do is Tuesday at four PM."
+    - "Sasha Romano."
+    - "8625550174."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "sasha"
+      callback_number: "8625550174"
+      preferred_window: "tuesday"
+    max_assistant_farewells: 1
+
+- id: slot_order_name_then_silence_alt_values
+  category: slot_order
+  description: |
+    Caller leads with just their name then must be prompted for the rest.
+    Different identity than original. Tests prompting flow when the
+    caller is initially terse.
+  user_turns:
+    - "It's Vince."
+    - "Oh, sorry — I want to book an appointment."
+    - "Wednesday at noon."
+    - "Two zero one five five five zero one one one."
+    - "Yes."
+    - "No, all good."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "vince"
+      callback_number: "2015550111"
+    max_assistant_farewells: 1
+
+- id: slot_order_name_then_silence_phrasing
+  category: slot_order
+  description: |
+    Name-first phrased as caller answering an implicit 'who's this' before
+    the bot asks. Tests handling of presumptive caller behavior.
+  user_turns:
+    - "Anya speaking."
+    - "Right, so I'm calling to book."
+    - "Friday at eleven AM."
+    - "9145550127."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "anya"
+      callback_number: "9145550127"
+    max_assistant_farewells: 1
+
+- id: slot_order_phone_with_name_alt_values
+  category: slot_order
+  description: |
+    Phone and name volunteered together, time later. Different identity
+    than original.
+  user_turns:
+    - "Hello, this is Maria, 786-555-0188."
+    - "Booking a cleaning."
+    - "Tuesday at 10 AM."
+    - "Correct."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "maria"
+      callback_number: "7865550188"
+    max_assistant_farewells: 1
+
+- id: slot_order_phone_with_name_phrasing
+  category: slot_order
+  description: |
+    Phone+name combined with comma-separated phrasing. Tests parsing of
+    one-utterance multi-slot inputs.
+  user_turns:
+    - "Hi, name's Drew, number is 5125550161."
+    - "Want to come in for a cleaning."
+    - "Wednesday at three PM."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "drew"
+      callback_number: "5125550161"
+    max_assistant_farewells: 1
+
+- id: slot_order_reason_first_alt_values
+  category: slot_order
+  description: |
+    Reason given first, all logistical info bundled later. Different
+    medical concern than the original case.
+  user_turns:
+    - "My gums have been sensitive for a few weeks."
+    - "I'd like to come in. My name is Lucia, phone 6505550109, and Friday at 1 PM works."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "lucia"
+      callback_number: "6505550109"
+    max_assistant_farewells: 1
+
+- id: slot_order_reason_first_phrasing
+  category: slot_order
+  description: |
+    Reason-first phrased with "I think I have a cavity" — concrete concern
+    rather than vague symptom. Tests that the LLM still proceeds to
+    booking and doesn't try to diagnose.
+  user_turns:
+    - "I think I have a cavity."
+    - "I'd like to come in for it. Name is Reggie, phone 4045550155, Monday at 11 AM."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "reggie"
+      callback_number: "4045550155"
+    assistant_must_not_say:
+      - "diagnose"
+      - "filling"
+    max_assistant_farewells: 1
+
+- id: slot_order_question_then_book_alt_values
+  category: slot_order
+  description: |
+    Caller asks a logistics question first, then proceeds with booking.
+    Different question than the original (asks about address vs hours).
+  user_turns:
+    - "Where are you located?"
+    - "OK, can I book Wednesday at 9 AM."
+    - "Larissa."
+    - "313-555-0123."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "larissa"
+      callback_number: "3135550123"
+    max_assistant_farewells: 1
+
+- id: slot_order_question_then_book_phrasing
+  category: slot_order
+  description: |
+    Caller asks about scheduling availability before stating their request.
+    Tests that the LLM doesn't claim availability info it doesn't have.
+  user_turns:
+    - "Do you have anything next week?"
+    - "OK, let me try Tuesday at 2 PM."
+    - "Cody."
+    - "5025550137."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "cody"
+      callback_number: "5025550137"
+    assistant_must_not_say:
+      - "I have an opening"
+      - "I have availability"
+      - "I see Tuesday is open"
+    max_assistant_farewells: 1
+
+- id: slot_order_all_at_once_no_dashes_alt_values
+  category: slot_order
+  description: |
+    Everything in first turn, phone with no separators. Different
+    identity than original.
+  user_turns:
+    - "Hi I'm Phoebe, 7745550150, want Thursday at 4 PM."
+    - "Yes."
+    - "No thanks."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "phoebe"
+      callback_number: "7745550150"
+    max_assistant_farewells: 1
+
+- id: slot_order_all_at_once_no_dashes_phrasing
+  category: slot_order
+  description: |
+    No-dashes phone in dense first turn, phrased as 'jot this down'.
+  user_turns:
+    - "Jot this down — name Reuben, number 4135550106, want Monday at noon."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "reuben"
+      callback_number: "4135550106"
+    max_assistant_farewells: 1
+
+- id: slot_order_partial_then_all_alt_values
+  category: slot_order
+  description: |
+    Caller starts with partial info then provides the rest. Different
+    identity than original.
+  user_turns:
+    - "Hi, I want to book."
+    - "Tuesday."
+    - "Two PM. My name is Dakota, phone 415-555-0193."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "dakota"
+      callback_number: "4155550193"
+    max_assistant_farewells: 1
+
+- id: slot_order_partial_then_all_phrasing
+  category: slot_order
+  description: |
+    Partial-then-all with different gap — caller starts vague, then
+    fills everything in one big turn after a clarifying question.
+  user_turns:
+    - "Need an appointment."
+    - "What do you need from me?"
+    - "Friday at three PM. I'm Mei Lin, my number is 7575550118."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "mei"
+      callback_number: "7575550118"
+    max_assistant_farewells: 1
+
+- id: slot_order_multi_name_alt_values
+  category: slot_order
+  description: |
+    Compound name with non-standard slot order. Different compound name
+    than original. Tests robustness on multi-part names.
+  user_turns:
+    - "Hi this is Jean-Paul Beaumont."
+    - "I'd like an appointment Tuesday at 10 AM."
+    - "Phone is 5045550136."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      callback_number: "5045550136"
+    max_assistant_farewells: 1
+
+- id: slot_order_multi_name_phrasing
+  category: slot_order
+  description: |
+    Compound name with apostrophe ('Sean O'Riordan'). Tests that the
+    LLM accepts apostrophe-containing names as legitimate (not garbage).
+  user_turns:
+    - "Sean O'Riordan here. I'd like to book Wednesday at 1 PM."
+    - "9095550144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      callback_number: "9095550144"
+    max_assistant_farewells: 1
+
+- id: vague_time_then_specific_alt_values
+  category: vague_response
+  description: |
+    Caller answers vaguely with 'afternoon', then commits to a specific
+    time. Different identity than original.
+  user_turns:
+    - "I want to schedule a cleaning Tuesday."
+    - "Sometime in the afternoon."
+    - "Two PM."
+    - "My name is Wei Chen."
+    - "9255550172."
+    - "Yes."
+    - "No, all good."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      preferred_window: "two"
+    assistant_must_not_say:
+      - "I have a slot at"
+    max_assistant_farewells: 1
+
+- id: vague_time_then_specific_phrasing
+  category: vague_response
+  description: |
+    Vague time given as 'sometime around lunch'. Tests that the LLM asks
+    for specifics rather than picking a default time.
+  user_turns:
+    - "I'd like to come in Friday."
+    - "Sometime around lunch."
+    - "Twelve-thirty works."
+    - "Tariq Faruq."
+    - "718-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "tariq"
+      callback_number: "7185550166"
+    max_assistant_farewells: 1
+
+- id: vague_morning_alt_values
+  category: vague_response
+  description: |
+    Caller says 'morning' as time. Different identity than original.
+  user_turns:
+    - "I'd like to come in Wednesday."
+    - "Morning."
+    - "Ten AM is fine."
+    - "Penelope Frost."
+    - "972-555-0145."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "penelope"
+      callback_number: "9725550145"
+    max_assistant_farewells: 1
+
+- id: vague_morning_phrasing
+  category: vague_response
+  description: |
+    Morning request phrased as 'before noon'. Tests recognition of
+    synonymous time ranges.
+  user_turns:
+    - "Tuesday before noon, please."
+    - "Eleven AM."
+    - "Sven Karlsson."
+    - "612-555-0177."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "sven"
+      callback_number: "6125550177"
+    max_assistant_farewells: 1
+
+- id: vague_soon_alt_values
+  category: vague_response
+  description: |
+    Caller wants 'soon'. Different identity than original.
+  user_turns:
+    - "I need to come in soon."
+    - "How about Monday."
+    - "Three PM works."
+    - "Donovan Park."
+    - "718-555-0181."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "donovan"
+      callback_number: "7185550181"
+    max_assistant_farewells: 1
+
+- id: vague_soon_phrasing
+  category: vague_response
+  description: |
+    'Soon' phrased as 'as soon as you can fit me in'. Tests urgency-
+    phrasing without it triggering escalation.
+  user_turns:
+    - "As soon as you can fit me in."
+    - "Tuesday morning."
+    - "Nine AM."
+    - "Hannah Wells."
+    - "405-555-0192."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "hannah"
+      callback_number: "4055550192"
+    tool_must_not_be_called:
+      - escalate_emergency
+    max_assistant_farewells: 1
+
+- id: vague_anytime_alt_values
+  category: vague_response
+  description: |
+    Caller says 'anytime'. Different identity than original.
+  user_turns:
+    - "I want to book Friday."
+    - "Anytime that works."
+    - "Let's do eleven AM."
+    - "Owen Liu."
+    - "510-555-0123."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "owen"
+      callback_number: "5105550123"
+    max_assistant_farewells: 1
+
+- id: vague_anytime_phrasing
+  category: vague_response
+  description: |
+    'Anytime' phrased as 'I'm flexible'. Tests recognition of synonymous
+    flexibility expressions.
+  user_turns:
+    - "Tuesday — I'm flexible."
+    - "Two PM if you have it."
+    - "Quincy Adams."
+    - "240-555-0166."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "quincy"
+      callback_number: "2405550166"
+    max_assistant_farewells: 1
+
+- id: vague_evening_alt_values
+  category: vague_response
+  description: |
+    Caller says 'evening' but office closes at 5; bot must guide to a
+    time within hours. Different identity than original.
+  user_turns:
+    - "I want Wednesday evening."
+    - "OK how about four PM."
+    - "Imogen Bell."
+    - "207-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "imogen"
+      callback_number: "2075550188"
+    max_assistant_farewells: 1
+
+- id: vague_evening_phrasing
+  category: vague_response
+  description: |
+    'Evening' phrased as 'after work'. Tests that the LLM understands
+    after-work as a constraint and steers toward office-hours options.
+  user_turns:
+    - "Thursday after work, ideally."
+    - "Four-thirty?"
+    - "Yes that works."
+    - "Mia Carrera."
+    - "619-555-0114."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "mia"
+      callback_number: "6195550114"
+    max_assistant_farewells: 1
+
+- id: vague_just_a_day_alt_values
+  category: vague_response
+  description: |
+    Caller gives only a day, must be prompted for time. Different
+    identity than original.
+  user_turns:
+    - "Friday."
+    - "I want to book a cleaning."
+    - "One PM is fine."
+    - "Roland Booker."
+    - "704-555-0179."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "roland"
+      callback_number: "7045550179"
+    max_assistant_farewells: 1
+
+- id: vague_just_a_day_phrasing
+  category: vague_response
+  description: |
+    Just-a-day with the day phrased relatively ('end of the week').
+    Tests interpretation of relative-day phrases without inventing.
+  user_turns:
+    - "End of the week."
+    - "Want to book a cleaning."
+    - "Friday at nine AM."
+    - "Aria Schmidt."
+    - "503-555-0148."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "aria"
+      callback_number: "5035550148"
+    max_assistant_farewells: 1
+
+- id: vague_uncertain_phone_alt_values
+  category: vague_response
+  description: |
+    Caller hesitates on phone number. Different identity than original.
+  user_turns:
+    - "Friday at three PM appointment please."
+    - "It's Lulu."
+    - "Hmm, hold on. OK 858-555-0162."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "lulu"
+      callback_number: "8585550162"
+    max_assistant_farewells: 1
+
+- id: vague_uncertain_phone_phrasing
+  category: vague_response
+  description: |
+    Phone hesitation phrased as 'let me check my phone'. Tests that the
+    LLM waits patiently rather than re-asking.
+  user_turns:
+    - "Tuesday at noon."
+    - "Renata."
+    - "Let me check my phone... it's 504-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "renata"
+      callback_number: "5045550188"
+    max_assistant_farewells: 1
+
+- id: vague_long_pause_then_info_alt_values
+  category: vague_response
+  description: |
+    Caller takes time, provides everything in pieces with hesitation.
+    Different identity than original.
+  user_turns:
+    - "Um..."
+    - "Yeah I'd like to book."
+    - "Wednesday."
+    - "One PM."
+    - "It's Heath."
+    - "208-555-0144."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "heath"
+      callback_number: "2085550144"
+    max_assistant_farewells: 1
+
+- id: vague_long_pause_then_info_phrasing
+  category: vague_response
+  description: |
+    Long-pause caller using lots of filler ('uh', 'I mean', 'sorry').
+    Tests that the LLM tolerates disfluency and still extracts slots.
+  user_turns:
+    - "Uh, I mean, sorry — appointment please."
+    - "Like, Thursday?"
+    - "Maybe two PM."
+    - "Sorry, I'm Bridget."
+    - "317-555-0181."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "bridget"
+      callback_number: "3175550181"
+    max_assistant_farewells: 1
+
+- id: vague_unclear_time_alt_values
+  category: vague_response
+  description: |
+    Caller says 'lunchtime'. Different identity than original.
+  user_turns:
+    - "Friday around lunchtime."
+    - "Twelve-thirty works for me."
+    - "Sully Donnelly."
+    - "631-555-0107."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "sully"
+      callback_number: "6315550107"
+    max_assistant_farewells: 1
+
+- id: vague_unclear_time_phrasing
+  category: vague_response
+  description: |
+    'Lunchtime' phrased as 'around when you take lunch'. Tests robustness
+    on awkward time-paraphrases.
+  user_turns:
+    - "Tuesday around when you take lunch."
+    - "How about twelve PM."
+    - "Talia Reeves."
+    - "919-555-0123."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "talia"
+      callback_number: "9195550123"
+    max_assistant_farewells: 1
+
+- id: vague_unsure_day_alt_values
+  category: vague_response
+  description: |
+    Caller doesn't know which day yet. Different identity than original.
+  user_turns:
+    - "I want to book."
+    - "I'm not sure which day yet."
+    - "OK Friday."
+    - "Three PM."
+    - "Kel Inoue."
+    - "808-555-0188."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "kel"
+      callback_number: "8085550188"
+    max_assistant_farewells: 1
+
+- id: vague_unsure_day_phrasing
+  category: vague_response
+  description: |
+    Day-uncertainty phrased as 'whichever day Dr. Smith has'. Tests that
+    the LLM doesn't pretend to check the doctor's calendar.
+  user_turns:
+    - "Whichever day Dr. Smith has."
+    - "Let me pick — Wednesday at one PM."
+    - "Marcus Webb."
+    - "415-555-0177."
+    - "Yes."
+    - "No."
+  expect:
+    tool_called: book_appointment_callback
+    tool_args_contain:
+      caller_name: "marcus"
+      callback_number: "4155550177"
+    assistant_must_not_say:
+      - "let me check the doctor's"
+      - "let me look at"
+    max_assistant_farewells: 1
